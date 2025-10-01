@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import logging
+
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ MODULE_PATH = (
     / "energy_pdf_report"
     / "__init__.py"
 )
+
 
 
 def _load_helpers() -> dict[str, object]:
@@ -65,6 +67,7 @@ class _MetricStub:
         self.category = "Test"
 
 
+
 def test_wh_to_kwh_conversion():
     """64 000 Wh doivent devenir 64 kWh."""
 
@@ -81,6 +84,7 @@ def test_kwh_remains_unchanged():
     """5 kWh restent 5 kWh."""
 
     assert normalize_to_kwh(5, "kWh") == pytest.approx(5)
+
 
 
 def test_calculate_totals_converts_wh_rows():
@@ -120,3 +124,4 @@ def test_calculate_totals_handles_missing_original_unit():
 
     assert totals["sensor.test_energy"] == pytest.approx(64.462)
     assert metadata["sensor.test_energy"][1]["unit_of_measurement"] == "kWh"
+
