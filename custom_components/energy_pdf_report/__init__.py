@@ -112,10 +112,12 @@ def normalize_to_kwh(value: float, unit: str | None) -> float:
     if lowered_unit == "wh":
         return value / 1000.0
     if lowered_unit == "mwh":
+
         # Distinguer les préfixes méga (M) et milli (m).
         first_char = cleaned_unit[0]
         if first_char == "m":
             return value / 1_000_000.0
+
         return value * 1000.0
 
     _LOGGER.warning(
