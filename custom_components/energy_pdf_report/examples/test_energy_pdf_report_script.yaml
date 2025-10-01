@@ -1,0 +1,46 @@
+# Example Home Assistant script to validate the Energy PDF Report helper.
+#
+# Copy the content into your ``scripts.yaml`` file or create a new script via the UI
+# by enabling YAML mode and pasting the sequence. The script calls the helper
+# service, waits for the completion notification, and reports success or failure.
+
+energy_pdf_report_test:
+  alias: "Test – Energy PDF Report"
+  description: >-
+    Lance le service ``energy_pdf_report.generate`` avec la période courante et
+    attend la notification persistante créée par l'intégration. Le script note
+    ensuite le message du rapport dans le journal ou signale une erreur si la
+    notification n'apparaît pas.
+  mode: single
+  sequence:
+    - variables:
+        notification_id: energy_pdf_report_last_report
+        notification_entity_id: persistent_notification.energy_pdf_report_last_report
+    - service: persistent_notification.dismiss
+      data:
+        notification_id: "{{ notification_id }}"
+    - service: energy_pdf_report.generate
+      data:
+        period: day
+    - wait_template: >-
+        {{ states(notification_entity_id) != 'unknown' }}
+      timeout: "00:01:00"
+      continue_on_timeout: true
+    - choose:
+        - conditions: "{{ wait.completed }}"
+          sequence:
+            - variables:
+                pdf_message: "{{ state_attr(notification_entity_id, 'message') }}"
+            - service: logbook.log
+              data:
+                name: "Energy PDF Report"
+                message: >-
+                  Rapport généré correctement. {{ pdf_message or 'Consultez la notification persistante pour les détails.' }}
+        - default:
+            - service: persistent_notification.create
+              data:
+                title: "Energy PDF Report"
+                message: >-
+                  La génération du rapport n'a pas créé de notification dans la minute.
+                  Vérifiez les logs Home Assistant pour des erreurs du service ``energy_pdf_report.generate``.
+                notification_id: "{{ notification_id }}_script_error"

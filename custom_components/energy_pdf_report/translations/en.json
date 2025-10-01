@@ -1,0 +1,72 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+
+          "openai_api_key": "OpenAI API key",
+          "co2_sensor_electricity": "Electricity CO₂ sensor",
+          "co2_sensor_gas": "Gas CO₂ sensor",
+          "co2_sensor_water": "Water CO₂ sensor",
+          "co2_sensor_savings": "Savings CO₂ sensor",
+          "price_sensor_electricity_import": "Electricity import cost sensor",
+          "price_sensor_electricity_export": "Electricity export compensation sensor",
+          "price_sensor_gas": "Gas cost sensor",
+          "price_sensor_water": "Water cost sensor"
+        },
+        "data_description": {
+          "openai_api_key": "API key used to contact OpenAI and generate EcoPilot advice.",
+          "co2_sensor_electricity": "Entity ID providing electricity emissions statistics (default: sensor.co2_scope_2_electricite_co2_prod_daily_precis).",
+          "co2_sensor_gas": "Entity ID providing gas emissions statistics (default: sensor.co2_gaz_jour).",
+          "co2_sensor_water": "Entity ID providing water emissions statistics (default: sensor.co2_eau_jour).",
+          "co2_sensor_savings": "Entity ID providing CO₂ savings statistics (default: sensor.co2_savings_today).",
+          "price_sensor_electricity_import": "Entity ID providing electricity import costs (default: sensor.energy_grid_import_cost).",
+          "price_sensor_electricity_export": "Entity ID providing electricity export compensation (default: sensor.energy_grid_export_compensation).",
+          "price_sensor_gas": "Entity ID providing gas costs (default: sensor.energy_gas_cost).",
+          "price_sensor_water": "Entity ID providing water costs (default: sensor.energy_water_cost)."
+
+        }
+      },
+      "reinstall_confirm": {
+        "title": "Replace existing Energy PDF Report",
+        "description": "An existing Energy PDF Report configuration ({title}) was found. Submit to remove it and install it again."
+      }
+    },
+    "abort": {
+      "remove_failed": "Removing the existing configuration failed. Please try again from Settings > Devices & Services.",
+      "already_configured": "Energy PDF Report is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Energy PDF Report options",
+        "description": "Configure the default output directory, reporting period and filename pattern used when generating PDFs.",
+        "data": {
+
+          "openai_api_key": "OpenAI API key",
+          "co2_sensor_electricity": "Electricity CO₂ sensor",
+          "co2_sensor_gas": "Gas CO₂ sensor",
+          "co2_sensor_water": "Water CO₂ sensor",
+          "co2_sensor_savings": "Savings CO₂ sensor",
+          "price_sensor_electricity_import": "Electricity import cost sensor",
+          "price_sensor_electricity_export": "Electricity export compensation sensor",
+          "price_sensor_gas": "Gas cost sensor",
+          "price_sensor_water": "Water cost sensor"
+        },
+        "data_description": {
+          "openai_api_key": "API key used to contact OpenAI and generate EcoPilot advice.",
+          "co2_sensor_electricity": "Entity ID providing electricity emissions statistics (default: sensor.co2_scope_2_electricite_co2_prod_daily_precis).",
+          "co2_sensor_gas": "Entity ID providing gas emissions statistics (default: sensor.co2_gaz_jour).",
+          "co2_sensor_water": "Entity ID providing water emissions statistics (default: sensor.co2_eau_jour).",
+          "co2_sensor_savings": "Entity ID providing CO₂ savings statistics (default: sensor.co2_savings_today).",
+          "price_sensor_electricity_import": "Entity ID providing electricity import costs (default: sensor.energy_grid_import_cost).",
+          "price_sensor_electricity_export": "Entity ID providing electricity export compensation (default: sensor.energy_grid_export_compensation).",
+          "price_sensor_gas": "Entity ID providing gas costs (default: sensor.energy_gas_cost).",
+          "price_sensor_water": "Entity ID providing water costs (default: sensor.energy_water_cost)."
+
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+
+          "openai_api_key": "Clé API OpenAI",
+          "co2_sensor_electricity": "Capteur CO₂ électricité",
+          "co2_sensor_gas": "Capteur CO₂ gaz",
+          "co2_sensor_water": "Capteur CO₂ eau",
+          "co2_sensor_savings": "Capteur économies de CO₂",
+          "price_sensor_electricity_import": "Capteur coût électricité import",
+          "price_sensor_electricity_export": "Capteur compensation électricité",
+          "price_sensor_gas": "Capteur coût gaz",
+          "price_sensor_water": "Capteur coût eau"
+        },
+        "data_description": {
+          "openai_api_key": "Clé API utilisée pour contacter OpenAI et générer les conseils EcoPilot.",
+          "co2_sensor_electricity": "Identifiant de l'entité fournissant les émissions d'électricité (par défaut : sensor.co2_scope_2_electricite_co2_prod_daily_precis).",
+          "co2_sensor_gas": "Identifiant de l'entité fournissant les émissions de gaz (par défaut : sensor.co2_gaz_jour).",
+          "co2_sensor_water": "Identifiant de l'entité fournissant les émissions liées à l'eau (par défaut : sensor.co2_eau_jour).",
+          "co2_sensor_savings": "Identifiant de l'entité indiquant les économies de CO₂ (par défaut : sensor.co2_savings_today).",
+          "price_sensor_electricity_import": "Entité fournissant le coût d'import électricité (par défaut : sensor.energy_grid_import_cost).",
+          "price_sensor_electricity_export": "Entité fournissant la compensation export électricité (par défaut : sensor.energy_grid_export_compensation).",
+          "price_sensor_gas": "Entité fournissant le coût du gaz (par défaut : sensor.energy_gas_cost).",
+          "price_sensor_water": "Entité fournissant le coût de l'eau (par défaut : sensor.energy_water_cost)."
+
+        }
+      },
+      "reinstall_confirm": {
+        "title": "Remplacer la configuration existante",
+        "description": "Une configuration Energy PDF Report (« {title} ») est déjà présente. Validez pour la supprimer et la réinstaller."
+      }
+    },
+    "abort": {
+      "remove_failed": "La suppression de l'ancienne configuration a échoué. Réessayez depuis Paramètres > Appareils et services.",
+      "already_configured": "Energy PDF Report est déjà configuré."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options du rapport PDF énergie",
+        "description": "Définissez le répertoire de sortie, la période par défaut et le modèle de nom de fichier utilisés lors de la génération des PDF.",
+        "data": {
+
+          "openai_api_key": "Clé API OpenAI",
+          "co2_sensor_electricity": "Capteur CO₂ électricité",
+          "co2_sensor_gas": "Capteur CO₂ gaz",
+          "co2_sensor_water": "Capteur CO₂ eau",
+          "co2_sensor_savings": "Capteur économies de CO₂",
+          "price_sensor_electricity_import": "Capteur coût électricité import",
+          "price_sensor_electricity_export": "Capteur compensation électricité",
+          "price_sensor_gas": "Capteur coût gaz",
+          "price_sensor_water": "Capteur coût eau"
+        },
+        "data_description": {
+          "openai_api_key": "Clé API utilisée pour contacter OpenAI et générer les conseils EcoPilot.",
+          "co2_sensor_electricity": "Identifiant de l'entité fournissant les émissions d'électricité (par défaut : sensor.co2_scope_2_electricite_co2_prod_daily_precis).",
+          "co2_sensor_gas": "Identifiant de l'entité fournissant les émissions de gaz (par défaut : sensor.co2_gaz_jour).",
+          "co2_sensor_water": "Identifiant de l'entité fournissant les émissions liées à l'eau (par défaut : sensor.co2_eau_jour).",
+          "co2_sensor_savings": "Identifiant de l'entité indiquant les économies de CO₂ (par défaut : sensor.co2_savings_today).",
+          "price_sensor_electricity_import": "Entité fournissant le coût d'import électricité (par défaut : sensor.energy_grid_import_cost).",
+          "price_sensor_electricity_export": "Entité fournissant la compensation export électricité (par défaut : sensor.energy_grid_export_compensation).",
+          "price_sensor_gas": "Entité fournissant le coût du gaz (par défaut : sensor.energy_gas_cost).",
+          "price_sensor_water": "Entité fournissant le coût de l'eau (par défaut : sensor.energy_water_cost)."
+        }
+
+      }
+    }
+  }
+}

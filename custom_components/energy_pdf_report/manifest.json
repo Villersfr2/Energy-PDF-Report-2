@@ -1,0 +1,14 @@
+{
+  "domain": "energy_pdf_report",
+  "name": "Energy PDF Report",
+  "version": "1.0.1",
+  "documentation": "https://github.com/Villersfr2/ecopilot-pdf-report",
+  "issue_tracker": "https://github.com/Villersfr2/ecopilot-pdf-report/issues",
+  "requirements": ["fpdf2>=2.8.4"],
+  "logo": "custom_components/energy_pdf_report/logo.png",
+  "icon": "mdi:file-pdf-box",
+  "codeowners": ["@Villersfr2"],
+  "iot_class": "local_polling",
+  "config_flow": true
+
+}
