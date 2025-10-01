@@ -112,10 +112,12 @@ def normalize_to_kwh(value: float, unit: str | None) -> float:
     if lowered_unit == "wh":
         return value / 1000.0
     if lowered_unit == "mwh":
+
         # Distinguer les préfixes méga (M) et milli (m).
         first_char = cleaned_unit[0]
         if first_char == "m":
             return value / 1_000_000.0
+
         return value * 1000.0
 
     _LOGGER.warning(
@@ -525,10 +527,12 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             "Aucune statistique n'a été trouvée dans les préférences énergie."
         )
 
+
     stats_map, metadata, unit_map = await _collect_statistics(
         hass, metrics, start, end, bucket
     )
     totals = _calculate_totals(metrics, stats_map, metadata, unit_map)
+
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -1318,7 +1322,9 @@ async def _collect_statistics(
         unit_value = meta.get("unit_of_measurement")
         unit_str = str(unit_value).strip() if unit_value is not None else ""
         meta[_ORIGINAL_UNIT_KEY] = unit_str or None
+
         unit_map[statistic_id] = unit_str or None
+
 
         if not unit_str:
             normalize_to_kwh(0.0, None)
@@ -1499,7 +1505,9 @@ def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
     metadata: Mapping[str, tuple[int, StatisticMetaData]],
+
     unit_map: Mapping[str, str | None],
+
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1543,6 +1551,7 @@ def _calculate_totals(
 
             warning_logged = bool(meta.get(_UNIT_WARNING_LOGGED_KEY))
 
+
         raw_unit_hint = unit_map.get(statistic_id)
         if isinstance(raw_unit_hint, str):
             raw_unit_hint = raw_unit_hint.strip() or None
@@ -1550,6 +1559,7 @@ def _calculate_totals(
             raw_unit_hint = None
 
         unit_for_normalization: str | None = raw_unit_hint or original_unit
+
         if unit_for_normalization is None and warning_logged:
             unit_for_normalization = "kWh"
         elif (
@@ -1564,8 +1574,10 @@ def _calculate_totals(
         totals[statistic_id] = normalized_total
 
         if meta is not None:
+
             lowered = unit_for_normalization.lower() if unit_for_normalization else ""
             if lowered in {"wh", "mwh"}:
+
                 meta["unit_of_measurement"] = "kWh"
             elif unit_for_normalization is None and warning_logged:
                 meta["unit_of_measurement"] = "kWh"
