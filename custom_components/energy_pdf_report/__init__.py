@@ -1939,6 +1939,16 @@ def _prepare_conclusion_summary(
                 )
                 continue
 
+        try:
+            total = float(total)
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Valeur de statistique %s non convertible en flottant: %s",
+                metric.statistic_id,
+                total,
+            )
+            continue
+
         has_values = True
         category_totals[key] += total
 
