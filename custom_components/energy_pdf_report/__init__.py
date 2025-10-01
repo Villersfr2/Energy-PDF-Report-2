@@ -19,7 +19,7 @@ from homeassistant.components import persistent_notification, recorder
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder.statistics import StatisticsRow
-from homeassistant.const import CONF_FILENAME, ENERGY_KILO_WATT_HOUR
+from homeassistant.const import CONF_FILENAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
@@ -27,12 +27,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
-from homeassistant.util.unit_conversion import EnergyConverter
-
-try:  # pragma: no cover - dépend de la version de Home Assistant
-    from homeassistant.util.unit_conversion import UnitConversionError
-except ImportError:  # pragma: no cover - compatibilité anciennes versions
-    UnitConversionError = ValueError  # type: ignore[misc,assignment]
 
 from homeassistant.components.energy.data import async_get_manager
 
@@ -1912,8 +1906,7 @@ def _prepare_conclusion_summary(
     category_totals: dict[str, float] = {
         value: 0.0 for value in _CONCLUSION_CATEGORY_MAP.values()
     }
-    reference_unit = ENERGY_KILO_WATT_HOUR
-    energy_unit: str | None = reference_unit
+    energy_unit: str | None = None
     has_values = False
 
     for metric in metrics:
@@ -1925,32 +1918,14 @@ def _prepare_conclusion_summary(
         if total is None:
             continue
 
-        unit = _extract_unit(metadata.get(metric.statistic_id)).strip()
-
-        if unit and unit != reference_unit:
-            try:
-                total = EnergyConverter.convert(total, unit, reference_unit)
-            except (UnitConversionError, ValueError):
-                _LOGGER.warning(
-                    "Impossible de convertir la statistique %s de %s vers %s",
-                    metric.statistic_id,
-                    unit,
-                    reference_unit,
-                )
-                continue
-
-        try:
-            total = float(total)
-        except (TypeError, ValueError):
-            _LOGGER.warning(
-                "Valeur de statistique %s non convertible en flottant: %s",
-                metric.statistic_id,
-                total,
-            )
-            continue
-
         has_values = True
         category_totals[key] += total
+
+        if energy_unit:
+            continue
+        unit_candidate = _extract_unit(metadata.get(metric.statistic_id)).strip()
+        if unit_candidate:
+            energy_unit = unit_candidate
 
     if not has_values:
         return None
