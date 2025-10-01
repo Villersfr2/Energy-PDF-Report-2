@@ -86,6 +86,11 @@ def test_kwh_remains_unchanged():
     assert normalize_to_kwh(5, "kWh") == pytest.approx(5)
 
 
+def test_milliwatt_hours_are_supported():
+    """1 500 000 mWh deviennent 1,5 kWh."""
+
+    assert normalize_to_kwh(1_500_000, "mWh") == pytest.approx(1.5)
+
 
 def test_calculate_totals_converts_wh_rows():
     """Les totaux sont convertis en kWh lorsque l'unité d'origine est Wh."""
