@@ -1,9 +1,9 @@
 {
   "domain": "energy_pdf_report",
   "name": "Energy PDF Report",
-  "version": "1.0.1",
-  "documentation": "https://github.com/Villersfr2/ecopilot-pdf-report",
-  "issue_tracker": "https://github.com/Villersfr2/ecopilot-pdf-report/issues",
+  "version": "2.0.2",
+  "documentation": "https://github.com/Villersfr2/Energy-PDF-Report-2",
+  "issue_tracker": "https://github.com/Villersfr2/Energy-PDF-Report-2/issues",
   "requirements": ["fpdf2>=2.8.4"],
   "logo": "custom_components/energy_pdf_report/logo.png",
   "icon": "mdi:file-pdf-box",
