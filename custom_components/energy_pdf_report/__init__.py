@@ -527,8 +527,12 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             "Aucune statistique n'a été trouvée dans les préférences énergie."
         )
 
-    stats_map, metadata = await _collect_statistics(hass, metrics, start, end, bucket)
-    totals = _calculate_totals(metrics, stats_map, metadata)
+
+    stats_map, metadata, unit_map = await _collect_statistics(
+        hass, metrics, start, end, bucket
+    )
+    totals = _calculate_totals(metrics, stats_map, metadata, unit_map)
+
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -1216,12 +1220,16 @@ async def _collect_statistics(
     start: datetime,
     end: datetime,
     bucket: str,
-) -> tuple[dict[str, list[StatisticsRow]], dict[str, tuple[int, StatisticMetaData]]]:
+) -> tuple[
+    dict[str, list[StatisticsRow]],
+    dict[str, tuple[int, StatisticMetaData]],
+    dict[str, str | None],
+]:
     """Récupérer les statistiques depuis recorder."""
 
     statistic_ids = {metric.statistic_id for metric in metrics}
     if not statistic_ids:
-        return {}, {}
+        return {}, {}, {}
 
     try:
         instance = recorder.get_instance(hass)
@@ -1232,6 +1240,7 @@ async def _collect_statistics(
 
     metadata_requires_hass = _recorder_metadata_requires_hass()
     metadata: dict[str, tuple[int, StatisticMetaData]]
+    unit_map: dict[str, str | None] = {}
 
     try:
         if metadata_requires_hass:
@@ -1282,6 +1291,7 @@ async def _collect_statistics(
     for statistic_id in statistic_ids:
         entry = metadata.get(statistic_id)
         if not entry:
+            unit_map[statistic_id] = None
             continue
 
         meta = entry[1]
@@ -1313,6 +1323,9 @@ async def _collect_statistics(
         unit_str = str(unit_value).strip() if unit_value is not None else ""
         meta[_ORIGINAL_UNIT_KEY] = unit_str or None
 
+        unit_map[statistic_id] = unit_str or None
+
+
         if not unit_str:
             normalize_to_kwh(0.0, None)
             meta[_UNIT_WARNING_LOGGED_KEY] = True
@@ -1342,7 +1355,7 @@ async def _collect_statistics(
         {"change"},
     )
 
-    return stats_map, metadata
+    return stats_map, metadata, unit_map
 
 
 async def _collect_co2_statistics(
@@ -1492,6 +1505,9 @@ def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
     metadata: Mapping[str, tuple[int, StatisticMetaData]],
+
+    unit_map: Mapping[str, str | None],
+
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1535,7 +1551,15 @@ def _calculate_totals(
 
             warning_logged = bool(meta.get(_UNIT_WARNING_LOGGED_KEY))
 
-        unit_for_normalization: str | None = original_unit
+
+        raw_unit_hint = unit_map.get(statistic_id)
+        if isinstance(raw_unit_hint, str):
+            raw_unit_hint = raw_unit_hint.strip() or None
+        else:
+            raw_unit_hint = None
+
+        unit_for_normalization: str | None = raw_unit_hint or original_unit
+
         if unit_for_normalization is None and warning_logged:
             unit_for_normalization = "kWh"
         elif (
@@ -1550,7 +1574,10 @@ def _calculate_totals(
         totals[statistic_id] = normalized_total
 
         if meta is not None:
-            if unit_for_normalization and unit_for_normalization.lower() in {"wh", "mwh"}:
+
+            lowered = unit_for_normalization.lower() if unit_for_normalization else ""
+            if lowered in {"wh", "mwh"}:
+
                 meta["unit_of_measurement"] = "kWh"
             elif unit_for_normalization is None and warning_logged:
                 meta["unit_of_measurement"] = "kWh"

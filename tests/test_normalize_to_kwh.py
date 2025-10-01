@@ -106,7 +106,14 @@ def test_calculate_totals_converts_wh_rows():
     }
 
     stats = {"sensor.test_energy": [{"change": 64_462.0}]}
-    totals = calculate_totals([_MetricStub("sensor.test_energy")], stats, metadata)
+
+    totals = calculate_totals(
+        [_MetricStub("sensor.test_energy")],
+        stats,
+        metadata,
+        {"sensor.test_energy": "Wh"},
+    )
+
 
     assert totals["sensor.test_energy"] == pytest.approx(64.462)
     assert metadata["sensor.test_energy"][1]["unit_of_measurement"] == "kWh"
@@ -125,7 +132,36 @@ def test_calculate_totals_handles_missing_original_unit():
     }
 
     stats = {"sensor.test_energy": [{"change": 64_462.0}]}
-    totals = calculate_totals([_MetricStub("sensor.test_energy")], stats, metadata)
+
+    totals = calculate_totals(
+        [_MetricStub("sensor.test_energy")],
+        stats,
+        metadata,
+        {"sensor.test_energy": "Wh"},
+    )
+    assert totals["sensor.test_energy"] == pytest.approx(64.462)
+    assert metadata["sensor.test_energy"][1]["unit_of_measurement"] == "kWh"
+
+
+def test_calculate_totals_prefers_unit_map_when_metadata_is_overwritten():
+    """Le plan d'unité garantit la conversion même si les métadonnées sont modifiées."""
+
+    metadata = {
+        "sensor.test_energy": (
+            0,
+            {
+                "unit_of_measurement": "kWh",
+            },
+        )
+    }
+
+    stats = {"sensor.test_energy": [{"change": 64_462.0}]}
+    totals = calculate_totals(
+        [_MetricStub("sensor.test_energy")],
+        stats,
+        metadata,
+        {"sensor.test_energy": "Wh"},
+    )
 
     assert totals["sensor.test_energy"] == pytest.approx(64.462)
     assert metadata["sensor.test_energy"][1]["unit_of_measurement"] == "kWh"
