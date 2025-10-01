@@ -1282,20 +1282,23 @@ async def _collect_statistics(
 
         current_name = meta.get("name")
         current_name_str = str(current_name).strip() if current_name is not None else ""
-        if current_name_str and current_name_str != statistic_id:
-            continue
-
         friendly_name: str | None = None
+        allow_name_override = not (
+            current_name_str and current_name_str != statistic_id
+        )
 
-        state = states.get(statistic_id)
-        if state and state.name and state.name.strip():
-            friendly_name = state.name.strip()
-        else:
-            registry_entry = entity_registry.async_get(statistic_id)
-            if registry_entry:
-                registry_name = registry_entry.name or registry_entry.original_name
-                if registry_name:
-                    friendly_name = str(registry_name).strip()
+        if allow_name_override:
+            state = states.get(statistic_id)
+            if state and state.name and state.name.strip():
+                friendly_name = state.name.strip()
+            else:
+                registry_entry = entity_registry.async_get(statistic_id)
+                if registry_entry:
+                    registry_name = (
+                        registry_entry.name or registry_entry.original_name
+                    )
+                    if registry_name:
+                        friendly_name = str(registry_name).strip()
 
         if friendly_name:
             meta["name"] = friendly_name

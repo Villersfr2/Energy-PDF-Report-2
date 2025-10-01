@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import logging
-from collections.abc import Callable
+
 from pathlib import Path
 
 import pytest
@@ -17,31 +17,55 @@ MODULE_PATH = (
 )
 
 
-def _load_normalize_to_kwh() -> Callable[[float, str | None], float]:
-    """Extraire la fonction normalize_to_kwh sans initialiser Home Assistant."""
+
+def _load_helpers() -> dict[str, object]:
+    """Extraire les fonctions utiles du module principal sans Home Assistant."""
 
     module_ast = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
-    function_node: ast.FunctionDef | None = None
+    needed_assigns = {"_ORIGINAL_UNIT_KEY", "_UNIT_WARNING_LOGGED_KEY"}
+    needed_functions = {"normalize_to_kwh", "_calculate_totals"}
+
+    selected: list[ast.stmt] = [
+        ast.ImportFrom(
+            module="__future__",
+            names=[ast.alias(name="annotations", asname=None)],
+            level=0,
+        )
+    ]
 
     for node in module_ast.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "normalize_to_kwh":
-            function_node = node
-            break
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in needed_assigns:
+                    selected.append(node)
+                    break
+        elif isinstance(node, ast.FunctionDef) and node.name in needed_functions:
+            selected.append(node)
 
-    if function_node is None:
-        raise AssertionError("normalize_to_kwh introuvable dans le module")
-
-    compiled = compile(
-        ast.Module(body=[function_node], type_ignores=[]),
-        str(MODULE_PATH),
-        "exec",
-    )
-    namespace: dict[str, object] = {"_LOGGER": logging.getLogger("test.normalize")}
+    module = ast.Module(body=selected, type_ignores=[])
+    ast.fix_missing_locations(module)
+    compiled = compile(module, str(MODULE_PATH), "exec")
+    namespace: dict[str, object] = {
+        "_LOGGER": logging.getLogger("test.normalize"),
+        "logging": logging,
+    }
     exec(compiled, namespace)
-    return namespace["normalize_to_kwh"]  # type: ignore[index]
+    return namespace
 
 
-normalize_to_kwh = _load_normalize_to_kwh()
+HELPERS = _load_helpers()
+normalize_to_kwh = HELPERS["normalize_to_kwh"]  # type: ignore[index]
+calculate_totals = HELPERS["_calculate_totals"]  # type: ignore[index]
+ORIGINAL_UNIT_KEY = HELPERS["_ORIGINAL_UNIT_KEY"]  # type: ignore[index]
+
+
+class _MetricStub:
+    """Représentation minimale d'une statistique pour les tests."""
+
+    def __init__(self, statistic_id: str) -> None:
+        self.statistic_id = statistic_id
+        self.category = "Test"
+
 
 
 def test_wh_to_kwh_conversion():
@@ -60,3 +84,44 @@ def test_kwh_remains_unchanged():
     """5 kWh restent 5 kWh."""
 
     assert normalize_to_kwh(5, "kWh") == pytest.approx(5)
+
+
+
+def test_calculate_totals_converts_wh_rows():
+    """Les totaux sont convertis en kWh lorsque l'unité d'origine est Wh."""
+
+    metadata = {
+        "sensor.test_energy": (
+            0,
+            {
+                ORIGINAL_UNIT_KEY: "Wh",
+                "unit_of_measurement": "kWh",
+            },
+        )
+    }
+
+    stats = {"sensor.test_energy": [{"change": 64_462.0}]}
+    totals = calculate_totals([_MetricStub("sensor.test_energy")], stats, metadata)
+
+    assert totals["sensor.test_energy"] == pytest.approx(64.462)
+    assert metadata["sensor.test_energy"][1]["unit_of_measurement"] == "kWh"
+
+
+def test_calculate_totals_handles_missing_original_unit():
+    """La conversion fonctionne même sans méta donnée interne dédiée."""
+
+    metadata = {
+        "sensor.test_energy": (
+            0,
+            {
+                "unit_of_measurement": "Wh",
+            },
+        )
+    }
+
+    stats = {"sensor.test_energy": [{"change": 64_462.0}]}
+    totals = calculate_totals([_MetricStub("sensor.test_energy")], stats, metadata)
+
+    assert totals["sensor.test_energy"] == pytest.approx(64.462)
+    assert metadata["sensor.test_energy"][1]["unit_of_measurement"] == "kWh"
+
