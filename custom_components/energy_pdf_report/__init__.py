@@ -1078,6 +1078,29 @@ def _localize_date(day: date, timezone: tzinfo) -> datetime:
 
 
 
+def _calculate_costs(
+    definitions: Iterable[PriceSensorDefinition],
+    totals_map: Mapping[str, float],
+) -> tuple[list[tuple[PriceSensorDefinition, float]], float, float]:
+    """Agréger les coûts d'import et les compensations d'export."""
+
+    rows: list[tuple[PriceSensorDefinition, float]] = []
+    import_cost = 0.0
+    export_comp = 0.0
+
+    for definition in definitions:
+        value = float(totals_map.get(definition.translation_key, 0.0))
+        rows.append((definition, value))
+
+        key = definition.translation_key.casefold()
+        if "export" in key or definition.is_credit:
+            export_comp += value
+        else:
+            import_cost += value
+
+    return rows, import_cost, export_comp
+
+
 def _build_metrics(
     preferences: "EnergyPreferences" | dict[str, Any],
     co2_enabled: bool = False,
@@ -1371,12 +1394,19 @@ async def _collect_price_statistics(
 
         total = 0.0
         has_sum = False
+        statistic_id_lower = entity_id.casefold()
         for row in rows:
             change_value = row.get("change")
             if change_value is None:
                 continue
             has_sum = True
-            total += float(change_value)
+            value = float(change_value)
+            if "import" in statistic_id_lower:
+                total += abs(value)
+            elif "export" in statistic_id_lower:
+                total += abs(value)
+            else:
+                total += value
 
         if has_sum:
             definition = entity_map[entity_id]
@@ -1654,15 +1684,16 @@ def _build_pdf(
 
     if price_definitions:
         price_totals_map = price_totals or {}
+        definition_rows, import_cost, export_comp = _calculate_costs(
+            price_definitions,
+            price_totals_map,
+        )
         builder.add_section_title(translations.price_section_title)
         builder.add_paragraph(translations.price_section_intro)
 
         price_rows: list[tuple[str, str, str]] = []
-        expenses_total = 0.0
-        income_total = 0.0
 
-        for definition in price_definitions:
-            value = price_totals_map.get(definition.translation_key, 0.0)
+        for definition, value in definition_rows:
             label = translations.price_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -1671,10 +1702,6 @@ def _build_pdf(
                 if definition.is_credit
                 else translations.price_expense_label
             )
-            if definition.is_credit:
-                income_total += value
-            else:
-                expenses_total += value
             price_rows.append((label, _format_number(value), impact))
 
         if price_rows:
@@ -1688,12 +1715,12 @@ def _build_pdf(
                 )
             )
 
-            balance = income_total - expenses_total
+            net = import_cost - export_comp
             builder.add_paragraph(
                 translations.price_balance_sentence.format(
-                    expenses=_format_number(expenses_total),
-                    income=_format_number(income_total),
-                    balance=_format_number(balance),
+                    expenses=_format_number(import_cost),
+                    income=_format_number(export_comp),
+                    balance=_format_number(net),
                 ),
                 bold=True,
             )
