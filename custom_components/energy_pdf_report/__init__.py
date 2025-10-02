@@ -86,47 +86,6 @@ _LOGGER = logging.getLogger(__name__)
 _RECORDER_METADATA_REQUIRES_HASS: bool | None = None
 
 
-_ORIGINAL_UNIT_KEY = "_energy_pdf_report_original_unit"
-_UNIT_WARNING_LOGGED_KEY = "_energy_pdf_report_unit_warning_logged"
-
-
-def normalize_to_kwh(value: float, unit: str | None) -> float:
-    """Convertir une valeur d'énergie vers des kWh."""
-
-    if unit is None:
-        _LOGGER.warning(
-            "Unité manquante pour une statistique d'énergie, supposée être en kWh."
-        )
-        return value
-
-    cleaned_unit = unit.strip()
-    if not cleaned_unit:
-        _LOGGER.warning(
-            "Unité vide pour une statistique d'énergie, supposée être en kWh."
-        )
-        return value
-
-    lowered_unit = cleaned_unit.lower()
-    if lowered_unit == "kwh":
-        return value
-    if lowered_unit == "wh":
-        return value / 1000.0
-    if lowered_unit == "mwh":
-
-        # Distinguer les préfixes méga (M) et milli (m).
-        first_char = cleaned_unit[0]
-        if first_char == "m":
-            return value / 1_000_000.0
-
-        return value * 1000.0
-
-    _LOGGER.warning(
-        "Unité inattendue '%s' pour une statistique d'énergie, supposée être en kWh.",
-        cleaned_unit,
-    )
-    return value
-
-
 SERVICE_GENERATE_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_START_DATE): cv.date,
@@ -527,12 +486,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             "Aucune statistique n'a été trouvée dans les préférences énergie."
         )
 
-
-    stats_map, metadata, unit_map = await _collect_statistics(
-        hass, metrics, start, end, bucket
-    )
-    totals = _calculate_totals(metrics, stats_map, metadata, unit_map)
-
+    stats_map, metadata = await _collect_statistics(hass, metrics, start, end, bucket)
+    totals = _calculate_totals(metrics, stats_map)
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -1220,16 +1175,12 @@ async def _collect_statistics(
     start: datetime,
     end: datetime,
     bucket: str,
-) -> tuple[
-    dict[str, list[StatisticsRow]],
-    dict[str, tuple[int, StatisticMetaData]],
-    dict[str, str | None],
-]:
+) -> tuple[dict[str, list[StatisticsRow]], dict[str, tuple[int, StatisticMetaData]]]:
     """Récupérer les statistiques depuis recorder."""
 
     statistic_ids = {metric.statistic_id for metric in metrics}
     if not statistic_ids:
-        return {}, {}, {}
+        return {}, {}
 
     try:
         instance = recorder.get_instance(hass)
@@ -1240,7 +1191,6 @@ async def _collect_statistics(
 
     metadata_requires_hass = _recorder_metadata_requires_hass()
     metadata: dict[str, tuple[int, StatisticMetaData]]
-    unit_map: dict[str, str | None] = {}
 
     try:
         if metadata_requires_hass:
@@ -1291,58 +1241,29 @@ async def _collect_statistics(
     for statistic_id in statistic_ids:
         entry = metadata.get(statistic_id)
         if not entry:
-            unit_map[statistic_id] = None
             continue
 
         meta = entry[1]
 
         current_name = meta.get("name")
         current_name_str = str(current_name).strip() if current_name is not None else ""
-        friendly_name: str | None = None
-        allow_name_override = not (
-            current_name_str and current_name_str != statistic_id
-        )
+        if current_name_str and current_name_str != statistic_id:
+            continue
 
-        if allow_name_override:
-            state = states.get(statistic_id)
-            if state and state.name and state.name.strip():
-                friendly_name = state.name.strip()
-            else:
-                registry_entry = entity_registry.async_get(statistic_id)
-                if registry_entry:
-                    registry_name = (
-                        registry_entry.name or registry_entry.original_name
-                    )
-                    if registry_name:
-                        friendly_name = str(registry_name).strip()
+        friendly_name: str | None = None
+
+        state = states.get(statistic_id)
+        if state and state.name and state.name.strip():
+            friendly_name = state.name.strip()
+        else:
+            registry_entry = entity_registry.async_get(statistic_id)
+            if registry_entry:
+                registry_name = registry_entry.name or registry_entry.original_name
+                if registry_name:
+                    friendly_name = str(registry_name).strip()
 
         if friendly_name:
             meta["name"] = friendly_name
-
-        unit_value = meta.get("unit_of_measurement")
-        unit_str = str(unit_value).strip() if unit_value is not None else ""
-        meta[_ORIGINAL_UNIT_KEY] = unit_str or None
-
-        unit_map[statistic_id] = unit_str or None
-
-
-        if not unit_str:
-            normalize_to_kwh(0.0, None)
-            meta[_UNIT_WARNING_LOGGED_KEY] = True
-            meta["unit_of_measurement"] = "kWh"
-            continue
-
-        lowered_unit = unit_str.lower()
-        if lowered_unit == "wh":
-            meta["unit_of_measurement"] = "kWh"
-        elif lowered_unit == "kwh":
-            meta["unit_of_measurement"] = "kWh"
-        elif lowered_unit == "mwh":
-            meta["unit_of_measurement"] = "kWh"
-        else:
-            normalize_to_kwh(0.0, unit_str)
-            meta[_UNIT_WARNING_LOGGED_KEY] = True
-            meta["unit_of_measurement"] = "kWh"
 
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
@@ -1355,7 +1276,7 @@ async def _collect_statistics(
         {"change"},
     )
 
-    return stats_map, metadata, unit_map
+    return stats_map, metadata
 
 
 async def _collect_co2_statistics(
@@ -1504,10 +1425,6 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
-    metadata: Mapping[str, tuple[int, StatisticMetaData]],
-
-    unit_map: Mapping[str, str | None],
-
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1529,58 +1446,8 @@ def _calculate_totals(
             has_change = True
             change_total += float(change_value)
 
-        if not has_change:
-            continue
-
-        meta_entry = metadata.get(statistic_id)
-        meta: dict[str, Any] | None = None
-        original_unit: str | None = None
-        warning_logged = False
-
-        if meta_entry:
-            meta = meta_entry[1]
-            stored_unit = meta.get(_ORIGINAL_UNIT_KEY)
-            if stored_unit is None:
-                stored_unit_value = meta.get("unit_of_measurement")
-                stored_unit = stored_unit_value
-
-            if isinstance(stored_unit, str):
-                original_unit = stored_unit.strip() or None
-            elif stored_unit is not None:
-                original_unit = str(stored_unit).strip() or None
-
-            warning_logged = bool(meta.get(_UNIT_WARNING_LOGGED_KEY))
-
-
-        raw_unit_hint = unit_map.get(statistic_id)
-        if isinstance(raw_unit_hint, str):
-            raw_unit_hint = raw_unit_hint.strip() or None
-        else:
-            raw_unit_hint = None
-
-        unit_for_normalization: str | None = raw_unit_hint or original_unit
-
-        if unit_for_normalization is None and warning_logged:
-            unit_for_normalization = "kWh"
-        elif (
-            unit_for_normalization is not None
-            and unit_for_normalization.lower() not in {"wh", "kwh", "mwh"}
-            and warning_logged
-        ):
-            unit_for_normalization = "kWh"
-
-        normalized_total = normalize_to_kwh(change_total, unit_for_normalization)
-
-        totals[statistic_id] = normalized_total
-
-        if meta is not None:
-
-            lowered = unit_for_normalization.lower() if unit_for_normalization else ""
-            if lowered in {"wh", "mwh"}:
-
-                meta["unit_of_measurement"] = "kWh"
-            elif unit_for_normalization is None and warning_logged:
-                meta["unit_of_measurement"] = "kWh"
+        if has_change:
+            totals[statistic_id] = change_total
 
 
     return totals
