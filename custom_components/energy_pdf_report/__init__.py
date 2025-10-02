@@ -9,6 +9,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, tzinfo
+from decimal import Decimal
 
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
@@ -664,7 +665,7 @@ async def _async_select_dashboard_preferences(
             for selection in dashboards:
                 if _match_dashboard_key(selection, normalized):
                     return await _async_enrich_selection_with_device_totals(
-                        hass, selection, start, end, bucket
+                        hass, manager, selection, start, end, bucket
                     )
 
         fetched = await _async_fetch_dashboard_preferences_via_methods(
@@ -672,7 +673,7 @@ async def _async_select_dashboard_preferences(
         )
         if fetched:
             return await _async_enrich_selection_with_device_totals(
-                hass, fetched, start, end, bucket
+                hass, manager, fetched, start, end, bucket
             )
 
         raise HomeAssistantError(
@@ -683,14 +684,14 @@ async def _async_select_dashboard_preferences(
     if dashboards:
         selection = _pick_default_dashboard(manager, dashboards)
         return await _async_enrich_selection_with_device_totals(
-            hass, selection, start, end, bucket
+            hass, manager, selection, start, end, bucket
         )
 
     data = getattr(manager, "data", None)
     if _is_energy_preferences(data):
         selection = DashboardSelection(None, None, data)
         return await _async_enrich_selection_with_device_totals(
-            hass, selection, start, end, bucket
+            hass, manager, selection, start, end, bucket
         )
 
     raise HomeAssistantError(
@@ -699,7 +700,8 @@ async def _async_select_dashboard_preferences(
 
 
 async def _async_enrich_selection_with_device_totals(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
+    manager: Any,
     selection: DashboardSelection,
     start: datetime,
     end: datetime,
@@ -707,15 +709,15 @@ async def _async_enrich_selection_with_device_totals(
 ) -> DashboardSelection:
     """Compléter une sélection avec les totaux normalisés du tableau énergie."""
 
-    totals = await _async_get_normalized_device_consumption_totals(
-        hass, selection.preferences, start, end, bucket
+    totals = await _async_get_dashboard_device_consumption_totals(
+        manager, selection.preferences, start, end, bucket
     )
     selection.device_consumption_totals = totals
     return selection
 
 
-async def _async_get_normalized_device_consumption_totals(
-    hass: HomeAssistant,
+async def _async_get_dashboard_device_consumption_totals(
+    manager: Any,
     preferences: Mapping[str, Any],
     start: datetime,
     end: datetime,
@@ -740,37 +742,317 @@ async def _async_get_normalized_device_consumption_totals(
     if not statistic_ids:
         return {}
 
-    try:
-        instance = recorder.get_instance(hass)
-    except RuntimeError as err:  # pragma: no cover - error handled elsewhere
-        _LOGGER.debug(
-            "Impossible de récupérer les totaux normalisés: %s", err
-        )
-        return {}
-
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        bucket,
-        {"energy": UnitOfEnergy.KILO_WATT_HOUR},
-        {"change"},
-    )
-
     totals: dict[str, float] = {}
-    for statistic_id in statistic_ids:
-        rows = stats_map.get(statistic_id) or []
-        total = 0.0
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
+    remaining: set[str] = set(statistic_ids)
+
+    if manager is None:
+        return totals
+
+    relevant_roots = _collect_dashboard_statistics_roots(manager)
+
+    def _parse_datetime_like(value: Any) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return datetime.fromtimestamp(value, tz=dt_util.UTC)
+            except (OSError, OverflowError, ValueError):
+                return None
+        if isinstance(value, str):
+            parsed = dt_util.parse_datetime(value)
+            if parsed is not None:
+                if parsed.tzinfo is None:
+                    return parsed.replace(tzinfo=dt_util.UTC)
+                return parsed
+            try:
+                parsed = datetime.fromisoformat(value)
+            except ValueError:
+                return None
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=dt_util.UTC)
+            return parsed
+        return None
+
+    def _period_matches(mapping: Mapping[str, Any]) -> bool:
+        candidate_bucket = mapping.get("bucket") or mapping.get("period") or mapping.get(
+            "granularity"
+        )
+        if isinstance(candidate_bucket, str) and candidate_bucket:
+            if candidate_bucket.lower() != bucket.lower():
+                return False
+
+        tolerance = timedelta(minutes=5)
+        for key, reference in (("start", start), ("end", end)):
+            candidate = mapping.get(key) or mapping.get(f"{key}_time") or mapping.get(
+                f"{key}_at"
+            )
+            if candidate is None:
                 continue
-            total += float(change_value)
-        totals[statistic_id] = total
+            parsed = _parse_datetime_like(candidate)
+            if parsed is None:
+                continue
+            if abs((dt_util.as_utc(parsed) - dt_util.as_utc(reference)).total_seconds()) > tolerance.total_seconds():
+                return False
+
+        return True
+
+    def _sum_changes(rows: Any) -> float | None:
+        if not isinstance(rows, list):
+            return None
+        total = 0.0
+        found = False
+        for row in rows:
+            value: float | None = None
+            if isinstance(row, Mapping):
+                for key in ("change", "delta", "value", "kwh", "energy", "sum"):
+                    candidate = row.get(key)
+                    if isinstance(candidate, (int, float, Decimal)) and not isinstance(
+                        candidate, bool
+                    ):
+                        value = float(candidate)
+                        break
+            elif isinstance(row, (int, float, Decimal)) and not isinstance(row, bool):
+                value = float(row)
+
+            if value is None:
+                continue
+            total += value
+            found = True
+
+        return total if found else None
+
+    def _coerce_total(candidate: Any) -> float | None:
+        if isinstance(candidate, (int, float, Decimal)) and not isinstance(candidate, bool):
+            return float(candidate)
+
+        if isinstance(candidate, Mapping):
+            # direct numeric keys
+            for key in (
+                "total",
+                "total_kwh",
+                "total_consumption",
+                "kwh",
+                "energy",
+                "energy_kwh",
+                "value",
+                "sum",
+                "change",
+                "delta",
+                "consumption",
+            ):
+                value = candidate.get(key)
+                if isinstance(value, (int, float, Decimal)) and not isinstance(
+                    value, bool
+                ):
+                    return float(value)
+
+            for key in ("statistics", "stats", "data", "entries", "rows", "points"):
+                nested = candidate.get(key)
+                total = _sum_changes(nested)
+                if total is not None:
+                    return total
+
+        if isinstance(candidate, list):
+            total = _sum_changes(candidate)
+            if total is not None:
+                return total
+
+        return None
+
+    relevant_keys = {
+        "device_consumption_totals",
+        "device_consumption",
+        "statistics",
+        "stats",
+        "by_statistic_id",
+        "statistics_by_statistic_id",
+        "totals",
+        "total",
+        "data",
+        "result",
+        "results",
+        "consumption",
+        "devices",
+        "metrics",
+        "values",
+        "normalized",
+        "normalized_totals",
+        "normalized_statistics",
+    }
+
+    visited: set[int] = set()
+
+    def _process_mapping(mapping: Mapping[str, Any]) -> None:
+        if not remaining:
+            return
+
+        if not _period_matches(mapping):
+            return
+
+        if "statistic_id" in mapping:
+            statistic_id = mapping.get("statistic_id")
+            if statistic_id is not None:
+                stat_key = str(statistic_id)
+                if stat_key in remaining:
+                    total = _coerce_total(mapping)
+                    if total is None:
+                        total = _sum_changes(mapping.get("statistics"))
+                    if total is not None:
+                        totals[stat_key] = total
+                        remaining.discard(stat_key)
+
+        for stat_key in list(remaining):
+            if stat_key not in mapping:
+                continue
+            total = _coerce_total(mapping.get(stat_key))
+            if total is not None:
+                totals[stat_key] = total
+                remaining.discard(stat_key)
+
+        for value in mapping.values():
+            if not isinstance(value, list):
+                continue
+            for item in value:
+                if not isinstance(item, Mapping):
+                    continue
+                candidate_stat = item.get("statistic_id") or item.get("stat_consumption")
+                if candidate_stat is None:
+                    continue
+                stat_key = str(candidate_stat)
+                if stat_key not in remaining:
+                    continue
+                total = _coerce_total(item)
+                if total is None:
+                    total = _sum_changes(item.get("statistics"))
+                if total is None:
+                    continue
+                totals[stat_key] = total
+                remaining.discard(stat_key)
+                if not remaining:
+                    return
+
+        for key in relevant_keys:
+            if key not in mapping:
+                continue
+            value = mapping.get(key)
+            if isinstance(value, Mapping):
+                _search_structure(value)
+            elif isinstance(value, list):
+                for item in value:
+                    _search_structure(item)
+
+    def _search_structure(candidate: Any, depth: int = 0) -> None:
+        if not remaining or depth > 8:
+            return
+
+        if isinstance(candidate, Mapping):
+            obj_id = id(candidate)
+            if obj_id in visited:
+                return
+            visited.add(obj_id)
+            _process_mapping(candidate)
+            if not remaining:
+                return
+            for value in candidate.values():
+                if isinstance(value, (Mapping, list, tuple, set)):
+                    _search_structure(value, depth + 1)
+            return
+
+        if isinstance(candidate, (list, tuple, set)):
+            obj_id = id(candidate)
+            if obj_id in visited:
+                return
+            visited.add(obj_id)
+            for item in candidate:
+                if not remaining:
+                    break
+                if isinstance(item, (Mapping, list, tuple, set)):
+                    _search_structure(item, depth + 1)
+            return
+
+    for root in relevant_roots:
+        _search_structure(root)
+        if not remaining:
+            break
 
     return totals
+
+
+def _collect_dashboard_statistics_roots(manager: Any) -> list[Any]:
+    """Collect the potential statistics containers exposed by the energy manager."""
+
+    roots: list[Any] = []
+    seen_ids: set[int] = set()
+
+    def _add_candidate(candidate: Any) -> None:
+        if isinstance(candidate, (Mapping, list, tuple, set)):
+            obj_id = id(candidate)
+            if obj_id in seen_ids:
+                return
+            seen_ids.add(obj_id)
+            roots.append(candidate)
+
+    if manager is None:
+        return roots
+
+    attributes = {
+        "data",
+        "dashboards",
+        "dashboard",
+        "statistics",
+        "stats",
+        "result",
+        "results",
+        "consumption",
+        "device_consumption",
+        "normalized",
+    }
+
+    for attr in attributes:
+        if not hasattr(manager, attr):
+            continue
+        value = getattr(manager, attr)
+        if value is None:
+            continue
+        _add_candidate(value)
+        if hasattr(value, "data"):
+            _add_candidate(getattr(value, "data"))
+
+        if isinstance(value, Mapping):
+            for key in attributes:
+                nested = value.get(key)
+                if nested is not None:
+                    _add_candidate(nested)
+
+    coordinator = getattr(manager, "coordinator", None)
+    if coordinator is not None:
+        _add_candidate(getattr(coordinator, "data", None))
+        _add_candidate(coordinator)
+
+    coordinators = getattr(manager, "coordinators", None)
+    if isinstance(coordinators, Mapping):
+        for item in coordinators.values():
+            if item is None:
+                continue
+            _add_candidate(item)
+            _add_candidate(getattr(item, "data", None))
+
+    if isinstance(manager, Mapping):
+        _add_candidate(manager)
+
+    try:
+        manager_vars = vars(manager)
+    except TypeError:
+        manager_vars = {}
+
+    for attr, value in manager_vars.items():
+        if attr.startswith("_") or "hass" in attr:
+            continue
+        _add_candidate(value)
+        if hasattr(value, "data"):
+            _add_candidate(getattr(value, "data", None))
+
+    return roots
 
 
 def _collect_dashboard_preferences(manager: Any) -> list[DashboardSelection]:
