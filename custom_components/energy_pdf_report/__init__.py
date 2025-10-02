@@ -1312,6 +1312,26 @@ async def _collect_statistics(
     return stats_map, metadata
 
 
+def _normalize_statistic_start(raw_start: Any) -> datetime | None:
+    """Convertir une valeur de début de statistique en datetime conscient du TZ."""
+
+    if raw_start is None:
+        return None
+
+    if isinstance(raw_start, (int, float)):
+        try:
+            return dt_util.utc_from_timestamp(raw_start)
+        except (TypeError, ValueError, OSError):
+            return None
+
+    if isinstance(raw_start, datetime):
+        if raw_start.tzinfo is None:
+            return raw_start.replace(tzinfo=dt_util.UTC)
+        return raw_start
+
+    return None
+
+
 async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
@@ -1351,11 +1371,12 @@ async def _collect_co2_statistics(
 
         daily_last: dict[date, float] = {}
         for row in rows:
-            start_ts = row.get("start")
-            if not start_ts:
+            start_ts = _normalize_statistic_start(row.get("start"))
+            if start_ts is None:
                 continue
 
-            day = dt_util.as_local(start_ts).date()
+            local_start = dt_util.as_local(start_ts)
+            day = local_start.date()
 
             value = row.get("sum")
             if value is None:
@@ -1413,11 +1434,12 @@ async def _collect_price_statistics(
 
         daily_last: dict[date, float] = {}
         for row in rows:
-            start_ts = row.get("start")
-            if not start_ts:
+            start_ts = _normalize_statistic_start(row.get("start"))
+            if start_ts is None:
                 continue
 
-            day = dt_util.as_local(start_ts).date()
+            local_start = dt_util.as_local(start_ts)
+            day = local_start.date()
 
             value = row.get("sum")
             if value is None:
