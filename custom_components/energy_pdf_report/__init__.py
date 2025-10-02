@@ -7,7 +7,7 @@ import calendar
 import inspect
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, tzinfo
 
 from pathlib import Path
@@ -19,7 +19,7 @@ from homeassistant.components import persistent_notification, recorder
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder.statistics import StatisticsRow
-from homeassistant.const import CONF_FILENAME
+from homeassistant.const import CONF_FILENAME, UnitOfEnergy
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
@@ -142,6 +142,7 @@ class DashboardSelection:
     identifier: str | None
     name: str | None
     preferences: dict[str, Any]
+    device_consumption_totals: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,15 +443,10 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     manager = await async_get_manager(hass)
 
 
-    dashboard_requested: str | None = call.data.get(CONF_DASHBOARD)
-    selection = await _async_select_dashboard_preferences(
-        hass, manager, dashboard_requested
-    )
-    preferences = selection.preferences
-
-
     options = _get_config_entry_options(hass)
     call_data = dict(call.data)
+
+    dashboard_requested: str | None = call_data.get(CONF_DASHBOARD)
 
 
     option_report_type = options.get(CONF_DEFAULT_REPORT_TYPE)
@@ -466,6 +462,16 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     call_data[CONF_PERIOD] = period
 
     start, end, display_start, display_end, bucket = _resolve_period(hass, call_data)
+
+    selection = await _async_select_dashboard_preferences(
+        hass,
+        manager,
+        dashboard_requested,
+        start,
+        end,
+        bucket,
+    )
+    preferences = selection.preferences
     option_co2_enabled = bool(options.get(CONF_CO2, DEFAULT_CO2))
     option_price_enabled = bool(options.get(CONF_PRICE, DEFAULT_PRICE))
 
@@ -488,6 +494,20 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
     stats_map, metadata = await _collect_statistics(hass, metrics, start, end, bucket)
     totals = _calculate_totals(metrics, stats_map)
+
+    if selection.device_consumption_totals:
+        for metric in metrics:
+            if metric.category != "Consommation appareils":
+                continue
+            normalized_total = selection.device_consumption_totals.get(
+                metric.statistic_id
+            )
+            if normalized_total is None:
+                continue
+            totals[metric.statistic_id] = normalized_total
+            metadata_entry = metadata.get(metric.statistic_id)
+            if metadata_entry:
+                metadata_entry[1]["unit_of_measurement"] = UnitOfEnergy.KILO_WATT_HOUR
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -625,7 +645,12 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
 
 async def _async_select_dashboard_preferences(
-    hass: HomeAssistant, manager: Any, requested_dashboard: str | None
+    hass: HomeAssistant,
+    manager: Any,
+    requested_dashboard: str | None,
+    start: datetime,
+    end: datetime,
+    bucket: str,
 ) -> DashboardSelection:
     """Sélectionner les préférences énergie pour le tableau demandé."""
 
@@ -638,13 +663,17 @@ async def _async_select_dashboard_preferences(
         if normalized is not None:
             for selection in dashboards:
                 if _match_dashboard_key(selection, normalized):
-                    return selection
+                    return await _async_enrich_selection_with_device_totals(
+                        hass, selection, start, end, bucket
+                    )
 
         fetched = await _async_fetch_dashboard_preferences_via_methods(
             hass, manager, requested_dashboard
         )
         if fetched:
-            return fetched
+            return await _async_enrich_selection_with_device_totals(
+                hass, fetched, start, end, bucket
+            )
 
         raise HomeAssistantError(
             f"Aucun tableau de bord énergie nommé '{requested_dashboard}' n'a été trouvé."
@@ -652,15 +681,96 @@ async def _async_select_dashboard_preferences(
 
 
     if dashboards:
-        return _pick_default_dashboard(manager, dashboards)
+        selection = _pick_default_dashboard(manager, dashboards)
+        return await _async_enrich_selection_with_device_totals(
+            hass, selection, start, end, bucket
+        )
 
     data = getattr(manager, "data", None)
     if _is_energy_preferences(data):
-        return DashboardSelection(None, None, data)
+        selection = DashboardSelection(None, None, data)
+        return await _async_enrich_selection_with_device_totals(
+            hass, selection, start, end, bucket
+        )
 
     raise HomeAssistantError(
         "Le tableau de bord énergie n'est pas encore configuré."
     )
+
+
+async def _async_enrich_selection_with_device_totals(
+    hass: HomeAssistant,
+    selection: DashboardSelection,
+    start: datetime,
+    end: datetime,
+    bucket: str,
+) -> DashboardSelection:
+    """Compléter une sélection avec les totaux normalisés du tableau énergie."""
+
+    totals = await _async_get_normalized_device_consumption_totals(
+        hass, selection.preferences, start, end, bucket
+    )
+    selection.device_consumption_totals = totals
+    return selection
+
+
+async def _async_get_normalized_device_consumption_totals(
+    hass: HomeAssistant,
+    preferences: Mapping[str, Any],
+    start: datetime,
+    end: datetime,
+    bucket: str,
+) -> dict[str, float]:
+    """Récupérer les totaux en kWh pour la consommation des appareils."""
+
+    device_entries = preferences.get("device_consumption", [])
+    if not isinstance(device_entries, list):
+        return {}
+
+    statistic_ids: list[str] = []
+    for entry in device_entries:
+        if not isinstance(entry, dict):
+            continue
+        statistic_id = entry.get("stat_consumption")
+        if not statistic_id:
+            continue
+        if statistic_id not in statistic_ids:
+            statistic_ids.append(str(statistic_id))
+
+    if not statistic_ids:
+        return {}
+
+    try:
+        instance = recorder.get_instance(hass)
+    except RuntimeError as err:  # pragma: no cover - error handled elsewhere
+        _LOGGER.debug(
+            "Impossible de récupérer les totaux normalisés: %s", err
+        )
+        return {}
+
+    stats_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        statistic_ids,
+        bucket,
+        {"energy": UnitOfEnergy.KILO_WATT_HOUR},
+        {"change"},
+    )
+
+    totals: dict[str, float] = {}
+    for statistic_id in statistic_ids:
+        rows = stats_map.get(statistic_id) or []
+        total = 0.0
+        for row in rows:
+            change_value = row.get("change")
+            if change_value is None:
+                continue
+            total += float(change_value)
+        totals[statistic_id] = total
+
+    return totals
 
 
 def _collect_dashboard_preferences(manager: Any) -> list[DashboardSelection]:
