@@ -487,7 +487,17 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         )
 
     stats_map, metadata = await _collect_statistics(hass, metrics, start, end, bucket)
-    totals = _calculate_totals(metrics, stats_map)
+
+    active_entry: ConfigEntry | None = None
+    domain_data = hass.data.get(DOMAIN)
+    if isinstance(domain_data, dict):
+        for entry_id in _active_entry_ids(domain_data):
+            entry_candidate = domain_data.get(entry_id)
+            if isinstance(entry_candidate, ConfigEntry):
+                active_entry = entry_candidate
+                break
+
+    totals = _calculate_totals(metrics, stats_map, active_entry)
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -1455,21 +1465,82 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
+    config_entry: ConfigEntry | None,
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
     totals: dict[str, float] = {metric.statistic_id: 0.0 for metric in metrics}
 
+    option_source: Mapping[str, Any] | None = None
+    if config_entry is not None:
+        option_source = config_entry.options or None
+        if not option_source:
+            option_source = config_entry.data or None
+
+    def _collect_statistic_ids(
+        definitions: Iterable[tuple[str, str]],
+        source: Mapping[str, Any] | None,
+    ) -> set[str]:
+        resolved: set[str] = set()
+        for option_key, default_value in definitions:
+            candidate: str | None = None
+            if source is not None:
+                raw = source.get(option_key)
+                if isinstance(raw, str):
+                    candidate = raw.strip()
+            if not candidate:
+                candidate = default_value
+            if candidate:
+                resolved.add(candidate.casefold())
+        return resolved
+
+    price_statistic_ids = _collect_statistic_ids(
+        (
+            (CONF_PRICE_ELECTRICITY_IMPORT, DEFAULT_PRICE_ELECTRICITY_IMPORT_SENSOR),
+            (CONF_PRICE_ELECTRICITY_EXPORT, DEFAULT_PRICE_ELECTRICITY_EXPORT_SENSOR),
+            (CONF_PRICE_GAS, DEFAULT_PRICE_GAS_SENSOR),
+            (CONF_PRICE_WATER, DEFAULT_PRICE_WATER_SENSOR),
+        ),
+        option_source,
+    )
+
+    co2_statistic_ids = _collect_statistic_ids(
+        (
+            (CONF_CO2_ELECTRICITY, DEFAULT_CO2_ELECTRICITY_SENSOR),
+            (CONF_CO2_GAS, DEFAULT_CO2_GAS_SENSOR),
+            (CONF_CO2_WATER, DEFAULT_CO2_WATER_SENSOR),
+            (CONF_CO2_SAVINGS, DEFAULT_CO2_SAVINGS_SENSOR),
+        ),
+        option_source,
+    )
+
     for statistic_id, rows in stats.items():
         if not rows:
             continue
 
+        totals.setdefault(statistic_id, 0.0)
+
+        normalized_id = statistic_id.casefold()
+
+        if normalized_id in price_statistic_ids or normalized_id in co2_statistic_ids:
+            daily_latest: dict[date, tuple[datetime, float]] = {}
+            for row in rows:
+                state_value = row.get("state")
+                start_time = row.get("start")
+                if state_value is None or not isinstance(start_time, datetime):
+                    continue
+                local_day = dt_util.as_local(start_time).date()
+                previous = daily_latest.get(local_day)
+                if previous is None or start_time >= previous[0]:
+                    daily_latest[local_day] = (start_time, float(state_value))
+
+            totals[statistic_id] = sum(value for _, value in daily_latest.values())
+            continue
 
         change_total = 0.0
         has_change = False
 
         for row in rows:
-
             change_value = row.get("change")
             if change_value is None:
                 continue
@@ -1478,7 +1549,6 @@ def _calculate_totals(
 
         if has_change:
             totals[statistic_id] = change_total
-
 
     return totals
 
