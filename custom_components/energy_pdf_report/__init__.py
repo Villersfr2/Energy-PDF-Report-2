@@ -1349,18 +1349,27 @@ async def _collect_co2_statistics(
         if not rows:
             continue
 
-        total = 0.0
-        has_sum = False
+        daily_last: dict[date, float] = {}
         for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
+            start_ts = row.get("start")
+            if not start_ts:
                 continue
-            has_sum = True
-            total += float(change_value)
 
-        if has_sum:
+            day = dt_util.as_local(start_ts).date()
+
+            value = row.get("sum")
+            if value is None:
+                value = row.get("state")
+            if value is None:
+                value = row.get("change")
+            if value is None:
+                continue
+
+            daily_last[day] = float(value)
+
+        if daily_last:
             definition = entity_map[entity_id]
-            results[definition.translation_key] = total
+            results[definition.translation_key] = sum(daily_last.values())
 
     return results
 
@@ -1402,23 +1411,33 @@ async def _collect_price_statistics(
         if not rows:
             continue
 
-        total = 0.0
-        has_sum = False
-        statistic_id_lower = entity_id.casefold()
+        daily_last: dict[date, float] = {}
         for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
+            start_ts = row.get("start")
+            if not start_ts:
                 continue
-            has_sum = True
-            value = float(change_value)
-            if "import" in statistic_id_lower:
-                total += abs(value)
-            elif "export" in statistic_id_lower:
-                total += abs(value)
-            else:
-                total += value
 
-        if has_sum:
+            day = dt_util.as_local(start_ts).date()
+
+            value = row.get("sum")
+            if value is None:
+                value = row.get("state")
+            if value is None:
+                value = row.get("change")
+            if value is None:
+                continue
+
+            daily_last[day] = float(value)
+
+        if daily_last:
+            total = 0.0
+            statistic_id_lower = entity_id.casefold()
+            for value in daily_last.values():
+                if "import" in statistic_id_lower or "export" in statistic_id_lower:
+                    total += abs(value)
+                else:
+                    total += value
+
             definition = entity_map[entity_id]
             results[definition.translation_key] = total
 
