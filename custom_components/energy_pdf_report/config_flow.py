@@ -218,8 +218,10 @@ try:
         """Config flow for Energy PDF Report (new-style signature)."""
 
 
+
     class ConfigFlow(EnergyPDFReportConfigFlow):
         """Expose the flow under the legacy ``ConfigFlow`` name."""
+
 
 
 except TypeError:  # pragma: no cover - compat with older versions
@@ -230,8 +232,10 @@ except TypeError:  # pragma: no cover - compat with older versions
         domain = DOMAIN
 
 
+
     class ConfigFlow(EnergyPDFReportConfigFlow):
         """Expose the same functionality for pre-domain keyword cores."""
+
 
 
 class EnergyPDFReportOptionsFlowHandler(config_entries.OptionsFlow):
