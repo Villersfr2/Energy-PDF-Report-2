@@ -25,6 +25,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
 
 from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers.network import NoURLAvailable, async_get_url
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -591,6 +592,36 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         conclusion_summary_for_advice,
     )
 
+    pdf_url: str | None = None
+    readable_path: str = pdf_path
+    filename_label: str = Path(pdf_path).name or pdf_path
+
+    try:
+        resolved_pdf_path = Path(pdf_path).expanduser().resolve()
+        resolved_www_path = Path(hass.config.path("www")).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError) as err:
+        _LOGGER.debug(
+            "Impossible de résoudre le chemin du PDF pour l'URL publique: %s", err
+        )
+    else:
+        if resolved_pdf_path.is_relative_to(resolved_www_path):
+            relative_path = resolved_pdf_path.relative_to(resolved_www_path)
+            readable_path = str(relative_path)
+            filename_label = relative_path.name or filename_label
+
+            try:
+                base_url = async_get_url(hass, prefer_external=True)
+            except (NoURLAvailable, HomeAssistantError):
+                try:
+                    base_url = async_get_url(hass, prefer_external=False)
+                except (NoURLAvailable, HomeAssistantError) as err:
+                    _LOGGER.debug(
+                        "Aucune URL de base disponible pour publier le PDF: %s", err
+                    )
+                    base_url = None
+            if base_url:
+                pdf_url = f"{base_url.rstrip('/')}/local/{relative_path.as_posix()}"
+
     message_lines = [
         translations.notification_line_period.format(
             start=display_start.date().isoformat(),
@@ -605,7 +636,13 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             )
         )
 
-    message_lines.append(translations.notification_line_file.format(path=pdf_path))
+    message_lines.append(
+        translations.notification_line_file.format(
+            path=readable_path,
+            url=pdf_url or pdf_path,
+            filename=filename_label,
+        )
+    )
     message = "\n".join(message_lines)
     persistent_notification.async_create(
         hass,
