@@ -13,7 +13,7 @@ from datetime import date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 from urllib.parse import quote, urljoin
-from homeassistant.core import async_get_hass
+
 import voluptuous as vol
 
 from homeassistant.components import persistent_notification, recorder
@@ -26,7 +26,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
 
 from homeassistant.helpers import config_validation as cv, entity_registry as er
-from homeassistant.helpers.network import async_get_url
+
+try:
+    from homeassistant.helpers.network import async_get_url
+except ImportError:  # pragma: no cover - compatibility with older HA versions
+    async_get_url = None  # type: ignore[assignment]
+
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -188,6 +193,41 @@ def _set_recorder_metadata_requires_hass(value: bool) -> None:
     _RECORDER_METADATA_REQUIRES_HASS = value
 
 
+
+def _resolve_base_url(hass: HomeAssistant) -> str | None:
+    """Determine the best base URL available for the instance."""
+
+    base_url: str | None = None
+
+    if async_get_url is not None:
+        try:
+            base_url = async_get_url(hass)
+        except HomeAssistantError:
+            base_url = None
+
+    if not base_url:
+        for candidate in (
+            getattr(hass.config, "external_url", None),
+            getattr(hass.config, "internal_url", None),
+        ):
+            if candidate:
+                base_url = str(candidate)
+                break
+
+    if not base_url:
+        api = getattr(hass.config, "api", None)
+        if api is not None:
+            base_url = getattr(api, "base_url", None) or getattr(api, "server_url", None)
+            if base_url:
+                base_url = str(base_url)
+
+    if base_url:
+        return base_url.rstrip("/")
+
+    return None
+
+
+
 async def _async_resolve_download_url(
     hass: HomeAssistant, pdf_path: Path | str
 ) -> str | None:
@@ -198,13 +238,11 @@ async def _async_resolve_download_url(
     if pdf_path_str.startswith(("http://", "https://")):
         return pdf_path_str
 
+    base_url = _resolve_base_url(hass)
+
     if pdf_path_str.startswith("/local/"):
-        try:
-            base_url = async_get_url(hass)
-        except HomeAssistantError:
-            base_url = None
         if base_url:
-            return urljoin(base_url.rstrip("/") + "/", pdf_path_str.lstrip("/"))
+            return urljoin(base_url + "/", pdf_path_str.lstrip("/"))
         return pdf_path_str
 
     path_obj = Path(pdf_path_str)
@@ -232,12 +270,10 @@ async def _async_resolve_download_url(
 
     encoded_relative = "/".join(quote(part) for part in relative_path.parts)
     local_path = f"/local/{encoded_relative}"
-    try:
-        base_url = async_get_url(hass)
-    except HomeAssistantError:
-        base_url = None
+
     if base_url:
-        return urljoin(base_url.rstrip("/") + "/", local_path.lstrip("/"))
+        return urljoin(base_url + "/", local_path.lstrip("/"))
+
     return local_path
 
 
