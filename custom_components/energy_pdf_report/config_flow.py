@@ -133,8 +133,8 @@ def _build_schema(defaults: Mapping[str, Any]) -> vol.Schema:
     return vol.Schema(schema_dict)
 
 
-class EnergyPDFReportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for Energy PDF Report."""
+class _EnergyPDFReportConfigFlow(config_entries.ConfigFlow):
+    """Base config flow for Energy PDF Report."""
 
     VERSION = 1
 
@@ -209,6 +209,24 @@ class EnergyPDFReportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         self._reconfigure_entry = None
         return await self.async_step_user()
+
+
+try:
+    class EnergyPDFReportConfigFlow(  # type: ignore[misc]
+        _EnergyPDFReportConfigFlow, domain=DOMAIN
+    ):
+        """Config flow for Energy PDF Report (new-style signature)."""
+
+
+except TypeError:  # pragma: no cover - compat with older versions
+
+    class EnergyPDFReportConfigFlow(_EnergyPDFReportConfigFlow):
+        """Config flow for Energy PDF Report (legacy signature)."""
+
+        domain = DOMAIN
+
+
+ConfigFlow = EnergyPDFReportConfigFlow
 
 
 class EnergyPDFReportOptionsFlowHandler(config_entries.OptionsFlow):
