@@ -12,6 +12,7 @@ from datetime import date, datetime, time, timedelta, tzinfo
 
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
+from urllib.parse import quote, urljoin
 from homeassistant.core import async_get_hass
 import voluptuous as vol
 
@@ -25,6 +26,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
 
 from homeassistant.helpers import config_validation as cv, entity_registry as er
+from homeassistant.helpers.network import async_get_url
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -184,6 +186,59 @@ def _set_recorder_metadata_requires_hass(value: bool) -> None:
 
     global _RECORDER_METADATA_REQUIRES_HASS
     _RECORDER_METADATA_REQUIRES_HASS = value
+
+
+async def _async_resolve_download_url(
+    hass: HomeAssistant, pdf_path: Path | str
+) -> str | None:
+    """Construire une URL téléchargeable pour le rapport généré."""
+
+    pdf_path_str = str(pdf_path)
+
+    if pdf_path_str.startswith(("http://", "https://")):
+        return pdf_path_str
+
+    if pdf_path_str.startswith("/local/"):
+        try:
+            base_url = async_get_url(hass)
+        except HomeAssistantError:
+            base_url = None
+        if base_url:
+            return urljoin(base_url.rstrip("/") + "/", pdf_path_str.lstrip("/"))
+        return pdf_path_str
+
+    path_obj = Path(pdf_path_str)
+    if not path_obj.is_absolute():
+        path_obj = Path(hass.config.path(str(path_obj)))
+
+    try:
+        resolved_path = path_obj.resolve()
+    except OSError:
+        resolved_path = path_obj
+
+    www_dir = Path(hass.config.path("www"))
+    try:
+        resolved_www = www_dir.resolve()
+    except OSError:
+        resolved_www = www_dir
+
+    try:
+        relative_path = resolved_path.relative_to(resolved_www)
+    except ValueError:
+        relative_path = None
+
+    if relative_path is None:
+        return None
+
+    encoded_relative = "/".join(quote(part) for part in relative_path.parts)
+    local_path = f"/local/{encoded_relative}"
+    try:
+        base_url = async_get_url(hass)
+    except HomeAssistantError:
+        base_url = None
+    if base_url:
+        return urljoin(base_url.rstrip("/") + "/", local_path.lstrip("/"))
+    return local_path
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -591,6 +646,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         conclusion_summary_for_advice,
     )
 
+    download_url = await _async_resolve_download_url(hass, pdf_path)
+
     message_lines = [
         translations.notification_line_period.format(
             start=display_start.date().isoformat(),
@@ -603,6 +660,11 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             translations.notification_line_dashboard.format(
                 dashboard=dashboard_label
             )
+        )
+
+    if download_url:
+        message_lines.append(
+            translations.notification_line_download.format(url=download_url)
         )
 
     message_lines.append(translations.notification_line_file.format(path=pdf_path))
