@@ -24,7 +24,7 @@ Le résumé met désormais en avant la consommation totale estimée (production 
 - `co2_enabled` *(optionnel)* : booléen permettant d'activer ou de désactiver la section CO₂ pour cet appel. Si le paramètre est absent, la valeur configurée dans les options de l'intégration est utilisée.
 - `price_enabled` *(optionnel)* : booléen permettant d'activer ou de désactiver la section coûts pour cet appel. Si le paramètre est absent, la valeur configurée dans les options de l'intégration est utilisée.
 
-Le fichier généré est également signalé via une notification persistante dans Home Assistant, qui mentionne le tableau de bord utilisé lorsque ce paramètre est précisé.
+Le fichier généré est également signalé via une notification persistante dans Home Assistant, qui mentionne le tableau de bord utilisé lorsque ce paramètre est précisé. Lorsque le rapport est enregistré dans un sous-dossier de `www`, la notification affiche désormais un lien direct de téléchargement.
 
 > ℹ️ Le nombre de statistiques indiqué dans le rapport correspond simplement aux identifiants uniques présents dans vos préférences du tableau de bord Énergie. L'intégration n'impose aucune limite : toutes les statistiques disponibles sont prises en compte.
 

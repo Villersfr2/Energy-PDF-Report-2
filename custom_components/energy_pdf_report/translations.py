@@ -155,7 +155,7 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         notification_title="Rapport énergie",
         notification_line_period="Rapport énergie généré pour la période du {start} au {end}.",
         notification_line_dashboard="Tableau de bord : {dashboard}",
-        notification_line_file="Fichier : {path}",
+        notification_line_file="Fichier : [{filename}]({url}) – {path}",
     ),
     "en": ReportTranslations(
         language="en",
@@ -233,7 +233,7 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         notification_title="Energy report",
         notification_line_period="Energy report generated for {start} to {end}.",
         notification_line_dashboard="Dashboard: {dashboard}",
-        notification_line_file="File: {path}",
+        notification_line_file="File: [{filename}]({url}) – {path}",
     ),
     "nl": ReportTranslations(
         language="nl",
@@ -311,7 +311,7 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         notification_title="Energiarapport",
         notification_line_period="Energiarapport gegenereerd voor {start} tot {end}.",
         notification_line_dashboard="Dashboard: {dashboard}",
-        notification_line_file="Bestand: {path}",
+        notification_line_file="Bestand: [{filename}]({url}) – {path}",
     ),
 }
 
