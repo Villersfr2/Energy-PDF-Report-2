@@ -133,8 +133,8 @@ def _build_schema(defaults: Mapping[str, Any]) -> vol.Schema:
     return vol.Schema(schema_dict)
 
 
-class EnergyPDFReportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for Energy PDF Report."""
+class _EnergyPDFReportConfigFlow(config_entries.ConfigFlow):
+    """Base config flow for Energy PDF Report."""
 
     VERSION = 1
 
@@ -209,6 +209,15 @@ class EnergyPDFReportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         self._reconfigure_entry = None
         return await self.async_step_user()
+
+class EnergyPDFReportConfigFlow(_EnergyPDFReportConfigFlow):
+    """Config flow for Energy PDF Report."""
+
+    domain = DOMAIN
+
+
+class ConfigFlow(EnergyPDFReportConfigFlow):
+    """Expose the flow under the legacy ``ConfigFlow`` name."""
 
 
 class EnergyPDFReportOptionsFlowHandler(config_entries.OptionsFlow):
