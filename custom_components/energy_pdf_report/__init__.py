@@ -13,6 +13,7 @@ from datetime import date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 from urllib.parse import quote, urljoin
+
 import voluptuous as vol
 
 from homeassistant.components import persistent_notification, recorder
@@ -25,10 +26,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
 
 from homeassistant.helpers import config_validation as cv, entity_registry as er
+
 try:
     from homeassistant.helpers.network import async_get_url
 except ImportError:  # pragma: no cover - compatibility with older HA versions
     async_get_url = None  # type: ignore[assignment]
+
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -190,6 +193,7 @@ def _set_recorder_metadata_requires_hass(value: bool) -> None:
     _RECORDER_METADATA_REQUIRES_HASS = value
 
 
+
 def _resolve_base_url(hass: HomeAssistant) -> str | None:
     """Determine the best base URL available for the instance."""
 
@@ -221,6 +225,7 @@ def _resolve_base_url(hass: HomeAssistant) -> str | None:
         return base_url.rstrip("/")
 
     return None
+
 
 
 async def _async_resolve_download_url(
