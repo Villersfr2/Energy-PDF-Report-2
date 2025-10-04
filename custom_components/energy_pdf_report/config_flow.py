@@ -210,6 +210,15 @@ class _EnergyPDFReportConfigFlow(config_entries.ConfigFlow):
         self._reconfigure_entry = None
         return await self.async_step_user()
 
+class EnergyPDFReportConfigFlow(_EnergyPDFReportConfigFlow):
+    """Config flow for Energy PDF Report."""
+
+    domain = DOMAIN
+
+
+class ConfigFlow(EnergyPDFReportConfigFlow):
+    """Expose the flow under the legacy ``ConfigFlow`` name."""
+
 
 try:
     class EnergyPDFReportConfigFlow(  # type: ignore[misc]
