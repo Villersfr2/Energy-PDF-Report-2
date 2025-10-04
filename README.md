@@ -42,3 +42,5 @@ data:
 ```
 
 Adjust the parameters to suit your environment or omit optional fields to rely on the configured defaults.
+
+When the generated PDF is stored within Home Assistant's `www` directory (for example, `/config/www/reports`), the persistent notification created by the integration will include a direct download link so you can access the document from the Home Assistant interface.
