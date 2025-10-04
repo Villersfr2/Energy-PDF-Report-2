@@ -41,4 +41,4 @@ data:
   filename: "weekly_energy_report.pdf"
 ```
 
-Adjust the parameters to suit your environment or omit optional fields to rely on the configured defaults. When the generated PDF is stored under the Home Assistant `www` directory, the persistent notification now includes a direct download link.
+Adjust the parameters to suit your environment or omit optional fields to rely on the configured defaults.

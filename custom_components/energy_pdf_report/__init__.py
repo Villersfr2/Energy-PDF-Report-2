@@ -25,7 +25,6 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
 
 from homeassistant.helpers import config_validation as cv, entity_registry as er
-from homeassistant.helpers.network import async_get_url, NoURLAvailable
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
@@ -488,17 +487,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         )
 
     stats_map, metadata = await _collect_statistics(hass, metrics, start, end, bucket)
-
-    active_entry: ConfigEntry | None = None
-    domain_data = hass.data.get(DOMAIN)
-    if isinstance(domain_data, dict):
-        for entry_id in _active_entry_ids(domain_data):
-            entry_candidate = domain_data.get(entry_id)
-            if isinstance(entry_candidate, ConfigEntry):
-                active_entry = entry_candidate
-                break
-
-    totals = _calculate_totals(metrics, stats_map, active_entry)
+    totals = _calculate_totals(metrics, stats_map)
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -602,37 +591,6 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         conclusion_summary_for_advice,
     )
 
-    readable_path = pdf_path
-    public_url: str | None = None
-    filename_label = Path(pdf_path).name
-
-    try:
-        resolved_pdf_path = Path(pdf_path)
-        if not resolved_pdf_path.is_absolute():
-            resolved_pdf_path = Path(hass.config.path(pdf_path))
-        resolved_pdf_path = resolved_pdf_path.resolve()
-        readable_path = str(resolved_pdf_path)
-        filename_label = resolved_pdf_path.name or filename_label
-
-        www_root = Path(hass.config.path("www")).resolve()
-        relative_pdf_path = resolved_pdf_path.relative_to(www_root)
-    except (OSError, ValueError):
-        relative_pdf_path = None
-    else:
-        base_url: str | None = None
-        try:
-            base_url = async_get_url(hass, prefer_external=True)
-        except (NoURLAvailable, HomeAssistantError):
-            try:
-                base_url = async_get_url(hass, prefer_external=False)
-            except (NoURLAvailable, HomeAssistantError):
-                base_url = None
-
-        if base_url:
-            public_url = f"{base_url.rstrip('/')}/local/{relative_pdf_path.as_posix()}"
-
-    url_for_message = public_url or readable_path
-
     message_lines = [
         translations.notification_line_period.format(
             start=display_start.date().isoformat(),
@@ -647,13 +605,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             )
         )
 
-    message_lines.append(
-        translations.notification_line_file.format(
-            path=readable_path,
-            url=url_for_message,
-            filename=filename_label,
-        )
-    )
+    message_lines.append(translations.notification_line_file.format(path=pdf_path))
     message = "\n".join(message_lines)
     persistent_notification.async_create(
         hass,
@@ -1126,29 +1078,6 @@ def _localize_date(day: date, timezone: tzinfo) -> datetime:
 
 
 
-def _calculate_costs(
-    definitions: Iterable[PriceSensorDefinition],
-    totals_map: Mapping[str, float],
-) -> tuple[list[tuple[PriceSensorDefinition, float]], float, float]:
-    """Agréger les coûts d'import et les compensations d'export."""
-
-    rows: list[tuple[PriceSensorDefinition, float]] = []
-    import_cost = 0.0
-    export_comp = 0.0
-
-    for definition in definitions:
-        value = float(totals_map.get(definition.translation_key, 0.0))
-        rows.append((definition, value))
-
-        key = definition.translation_key.casefold()
-        if "export" in key or definition.is_credit:
-            export_comp += value
-        else:
-            import_cost += value
-
-    return rows, import_cost, export_comp
-
-
 def _build_metrics(
     preferences: "EnergyPreferences" | dict[str, Any],
     co2_enabled: bool = False,
@@ -1350,26 +1279,6 @@ async def _collect_statistics(
     return stats_map, metadata
 
 
-def _normalize_statistic_start(raw_start: Any) -> datetime | None:
-    """Convertir une valeur de début de statistique en datetime conscient du TZ."""
-
-    if raw_start is None:
-        return None
-
-    if isinstance(raw_start, (int, float)):
-        try:
-            return dt_util.utc_from_timestamp(raw_start)
-        except (TypeError, ValueError, OSError):
-            return None
-
-    if isinstance(raw_start, datetime):
-        if raw_start.tzinfo is None:
-            return raw_start.replace(tzinfo=dt_util.UTC)
-        return raw_start
-
-    return None
-
-
 async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
@@ -1407,28 +1316,18 @@ async def _collect_co2_statistics(
         if not rows:
             continue
 
-        daily_last: dict[date, float] = {}
+        total = 0.0
+        has_sum = False
         for row in rows:
-            start_ts = _normalize_statistic_start(row.get("start"))
-            if start_ts is None:
+            change_value = row.get("change")
+            if change_value is None:
                 continue
+            has_sum = True
+            total += float(change_value)
 
-            local_start = dt_util.as_local(start_ts)
-            day = local_start.date()
-
-            value = row.get("sum")
-            if value is None:
-                value = row.get("state")
-            if value is None:
-                value = row.get("change")
-            if value is None:
-                continue
-
-            daily_last[day] = float(value)
-
-        if daily_last:
+        if has_sum:
             definition = entity_map[entity_id]
-            results[definition.translation_key] = sum(daily_last.values())
+            results[definition.translation_key] = total
 
     return results
 
@@ -1470,34 +1369,16 @@ async def _collect_price_statistics(
         if not rows:
             continue
 
-        daily_last: dict[date, float] = {}
+        total = 0.0
+        has_sum = False
         for row in rows:
-            start_ts = _normalize_statistic_start(row.get("start"))
-            if start_ts is None:
+            change_value = row.get("change")
+            if change_value is None:
                 continue
+            has_sum = True
+            total += float(change_value)
 
-            local_start = dt_util.as_local(start_ts)
-            day = local_start.date()
-
-            value = row.get("sum")
-            if value is None:
-                value = row.get("state")
-            if value is None:
-                value = row.get("change")
-            if value is None:
-                continue
-
-            daily_last[day] = float(value)
-
-        if daily_last:
-            total = 0.0
-            statistic_id_lower = entity_id.casefold()
-            for value in daily_last.values():
-                if "import" in statistic_id_lower or "export" in statistic_id_lower:
-                    total += abs(value)
-                else:
-                    total += value
-
+        if has_sum:
             definition = entity_map[entity_id]
             results[definition.translation_key] = total
 
@@ -1544,82 +1425,21 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
-    config_entry: ConfigEntry | None,
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
     totals: dict[str, float] = {metric.statistic_id: 0.0 for metric in metrics}
 
-    option_source: Mapping[str, Any] | None = None
-    if config_entry is not None:
-        option_source = config_entry.options or None
-        if not option_source:
-            option_source = config_entry.data or None
-
-    def _collect_statistic_ids(
-        definitions: Iterable[tuple[str, str]],
-        source: Mapping[str, Any] | None,
-    ) -> set[str]:
-        resolved: set[str] = set()
-        for option_key, default_value in definitions:
-            candidate: str | None = None
-            if source is not None:
-                raw = source.get(option_key)
-                if isinstance(raw, str):
-                    candidate = raw.strip()
-            if not candidate:
-                candidate = default_value
-            if candidate:
-                resolved.add(candidate.casefold())
-        return resolved
-
-    price_statistic_ids = _collect_statistic_ids(
-        (
-            (CONF_PRICE_ELECTRICITY_IMPORT, DEFAULT_PRICE_ELECTRICITY_IMPORT_SENSOR),
-            (CONF_PRICE_ELECTRICITY_EXPORT, DEFAULT_PRICE_ELECTRICITY_EXPORT_SENSOR),
-            (CONF_PRICE_GAS, DEFAULT_PRICE_GAS_SENSOR),
-            (CONF_PRICE_WATER, DEFAULT_PRICE_WATER_SENSOR),
-        ),
-        option_source,
-    )
-
-    co2_statistic_ids = _collect_statistic_ids(
-        (
-            (CONF_CO2_ELECTRICITY, DEFAULT_CO2_ELECTRICITY_SENSOR),
-            (CONF_CO2_GAS, DEFAULT_CO2_GAS_SENSOR),
-            (CONF_CO2_WATER, DEFAULT_CO2_WATER_SENSOR),
-            (CONF_CO2_SAVINGS, DEFAULT_CO2_SAVINGS_SENSOR),
-        ),
-        option_source,
-    )
-
     for statistic_id, rows in stats.items():
         if not rows:
             continue
 
-        totals.setdefault(statistic_id, 0.0)
-
-        normalized_id = statistic_id.casefold()
-
-        if normalized_id in price_statistic_ids or normalized_id in co2_statistic_ids:
-            daily_latest: dict[date, tuple[datetime, float]] = {}
-            for row in rows:
-                state_value = row.get("state")
-                start_time = row.get("start")
-                if state_value is None or not isinstance(start_time, datetime):
-                    continue
-                local_day = dt_util.as_local(start_time).date()
-                previous = daily_latest.get(local_day)
-                if previous is None or start_time >= previous[0]:
-                    daily_latest[local_day] = (start_time, float(state_value))
-
-            totals[statistic_id] = sum(value for _, value in daily_latest.values())
-            continue
 
         change_total = 0.0
         has_change = False
 
         for row in rows:
+
             change_value = row.get("change")
             if change_value is None:
                 continue
@@ -1628,6 +1448,7 @@ def _calculate_totals(
 
         if has_change:
             totals[statistic_id] = change_total
+
 
     return totals
 
@@ -1833,16 +1654,15 @@ def _build_pdf(
 
     if price_definitions:
         price_totals_map = price_totals or {}
-        definition_rows, import_cost, export_comp = _calculate_costs(
-            price_definitions,
-            price_totals_map,
-        )
         builder.add_section_title(translations.price_section_title)
         builder.add_paragraph(translations.price_section_intro)
 
         price_rows: list[tuple[str, str, str]] = []
+        expenses_total = 0.0
+        income_total = 0.0
 
-        for definition, value in definition_rows:
+        for definition in price_definitions:
+            value = price_totals_map.get(definition.translation_key, 0.0)
             label = translations.price_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -1851,6 +1671,10 @@ def _build_pdf(
                 if definition.is_credit
                 else translations.price_expense_label
             )
+            if definition.is_credit:
+                income_total += value
+            else:
+                expenses_total += value
             price_rows.append((label, _format_number(value), impact))
 
         if price_rows:
@@ -1864,12 +1688,12 @@ def _build_pdf(
                 )
             )
 
-            net = import_cost - export_comp
+            balance = income_total - expenses_total
             builder.add_paragraph(
                 translations.price_balance_sentence.format(
-                    expenses=_format_number(import_cost),
-                    income=_format_number(export_comp),
-                    balance=_format_number(net),
+                    expenses=_format_number(expenses_total),
+                    income=_format_number(income_total),
+                    balance=_format_number(balance),
                 ),
                 bold=True,
             )
