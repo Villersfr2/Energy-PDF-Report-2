@@ -642,8 +642,8 @@ def build_comparison_section(
         metrics, comparison_context
     )
 
-    _inject_self_consumption(primary_values, primary_units, primary_summary)
-    _inject_self_consumption(
+    _inject_summary_values(primary_values, primary_units, primary_summary)
+    _inject_summary_values(
         comparison_values, comparison_units, comparison_summary
     )
 
@@ -700,13 +700,16 @@ def _aggregate_comparison_values(
         key: None
         for key in (
             "consumption",
+            "total_estimated_consumption",
+            "untracked_consumption",
+            "device_consumption",
             "production",
             "import",
             "export",
+            "self_consumption",
             "expenses",
             "income",
             "co2",
-            "self_consumption",
         )
     }
     units: dict[str, str] = {key: "" for key in aggregated}
@@ -736,18 +739,21 @@ def _aggregate_comparison_values(
     return aggregated, units
 
 
-def _inject_self_consumption(
+def _inject_summary_values(
     aggregated: dict[str, float | None],
     units: dict[str, str],
     summary: Any | None,
 ) -> None:
-    """Ajouter l'autoconsommation si le résumé de conclusion est disponible."""
+    """Enrichir les valeurs avec les données issues de la conclusion."""
 
     if summary is None:
         return
 
     direct = getattr(summary, "direct", None)
     indirect = getattr(summary, "indirect", None)
+    total_estimated = getattr(summary, "total_estimated_consumption", None)
+    untracked = getattr(summary, "untracked_consumption", None)
+    energy_unit = getattr(summary, "energy_unit", "") or ""
 
     total: float | None
     if direct is None and indirect is None:
@@ -756,9 +762,17 @@ def _inject_self_consumption(
         total = (direct or 0.0) + (indirect or 0.0)
 
     aggregated["self_consumption"] = total
-    unit = getattr(summary, "energy_unit", "") or ""
-    if unit:
-        units["self_consumption"] = unit
+    if energy_unit:
+        units["self_consumption"] = energy_unit
+
+    aggregated["total_estimated_consumption"] = total_estimated
+    aggregated["untracked_consumption"] = untracked
+
+    if energy_unit:
+        if total_estimated is not None:
+            units["total_estimated_consumption"] = energy_unit
+        if untracked is not None:
+            units["untracked_consumption"] = energy_unit
 
 
 def _classify_metric_category(category: str) -> set[str]:
@@ -771,7 +785,7 @@ def _classify_metric_category(category: str) -> set[str]:
 
     if "consommation" in lowered or "charge" in lowered:
         result.add("consumption")
-    if "production" in lowered or "décharge" in lowered or "decharge" in lowered:
+    if "production" in lowered:
         result.add("production")
     if "import" in lowered:
         result.add("import")
@@ -783,6 +797,8 @@ def _classify_metric_category(category: str) -> set[str]:
         result.add("income")
     if any(keyword in lowered for keyword in ("co2", "émission", "emission")):
         result.add("co2")
+    if any(keyword in lowered for keyword in ("appareil", "device")):
+        result.add("device_consumption")
 
     return result
 
@@ -862,6 +878,13 @@ def _format_signed(value: float) -> str:
 
 _COMPARISON_ROWS: Tuple[Tuple[str, str, str | None], ...] = (
     ("consumption", "comparison_consumption_label", None),
+    (
+        "total_estimated_consumption",
+        "comparison_total_estimated_consumption_label",
+        None,
+    ),
+    ("untracked_consumption", "comparison_untracked_consumption_label", None),
+    ("device_consumption", "comparison_device_consumption_label", None),
     ("production", "comparison_production_label", None),
     ("import", "comparison_import_label", None),
     ("export", "comparison_export_label", None),
