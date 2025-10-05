@@ -44,7 +44,7 @@ _USER_INSTRUCTIONS: Final[dict[str, str]] = {
         "piece of advice based on it."
     ),
     "nl": (
-        "Onderstaande conclusie vat het rapport samen. Formuleer één professioneel B2B-advies op basis daarvan."
+        "De onderstaande conclusie van het rapport vat de situatie samen. Formuleer op basis hiervan een professioneel, B2B-georiënteerd advies"
     ),
 }
 
