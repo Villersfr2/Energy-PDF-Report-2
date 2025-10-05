@@ -44,7 +44,8 @@ _USER_INSTRUCTIONS: Final[dict[str, str]] = {
         "piece of advice based on it."
     ),
     "nl": (
-        "De onderstaande conclusie van het rapport vat de situatie samen. Formuleer op basis hiervan een professioneel, B2B-georiënteerd advies"
+        "De onderstaande conclusie van het rapport vat de situatie samen. Formuleer op basis hiervan een professioneel,"
+        "B2B-georiënteerd advies, duidelijk gestructureerd in meerdere genummerde aanbevelingen of actiepunten (minimaal 3), elk voorzien van een korte en concrete toelichting die relevant is voor de organisatiecontext."
     ),
 }
 
