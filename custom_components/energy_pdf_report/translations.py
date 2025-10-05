@@ -51,6 +51,19 @@ class ReportTranslations:
     co2_savings_label: str
     co2_balance_sentence: str
     co2_sensor_labels: Mapping[str, str]
+    comparison_section_title: str
+    comparison_table_title: str
+    comparison_header_category: str
+    comparison_header_difference: str
+    comparison_header_variation: str
+    comparison_consumption_label: str
+    comparison_production_label: str
+    comparison_import_label: str
+    comparison_export_label: str
+    comparison_self_consumption_label: str
+    comparison_expense_label: str
+    comparison_income_label: str
+    comparison_co2_label: str
     conclusion_title: str
     conclusion_overview_without_battery: str
     conclusion_overview_with_battery: str
@@ -132,6 +145,19 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
             "co2_savings": "Économies solaire (autoconsommation)",
 
         },
+        comparison_section_title="Comparaison de périodes",
+        comparison_table_title="Comparaison synthétique",
+        comparison_header_category="Catégorie",
+        comparison_header_difference="Différence",
+        comparison_header_variation="Variation",
+        comparison_consumption_label="Consommation",
+        comparison_production_label="Production",
+        comparison_import_label="Import réseau",
+        comparison_export_label="Export réseau",
+        comparison_self_consumption_label="Autoconsommation",
+        comparison_expense_label="Dépenses",
+        comparison_income_label="Revenus",
+        comparison_co2_label="CO₂",
         conclusion_title="Conclusion",
         conclusion_overview_without_battery="Sur la période, la production solaire atteint {production} dont {direct} autoconsommés directement. Les importations réseau totalisent {imported} tandis que {exported} ont été réinjectés, pour une consommation des appareils de {consumption}. La consommation totale estimée atteint {total_consumption} dont {untracked_consumption} non suivie.",
         conclusion_overview_with_battery="Sur la période, la production solaire atteint {production} : {direct} ont été autoconsommés directement et {indirect} via la batterie. Les importations réseau totalisent {imported} tandis que {exported} ont été réinjectés, pour une consommation des appareils de {consumption}. La consommation totale estimée atteint {total_consumption} dont {untracked_consumption} non suivie.",
@@ -211,6 +237,19 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
             "co2_savings": "Solar self-consumption savings",
 
         },
+        comparison_section_title="Period comparison",
+        comparison_table_title="Comparison overview",
+        comparison_header_category="Category",
+        comparison_header_difference="Difference",
+        comparison_header_variation="Change",
+        comparison_consumption_label="Consumption",
+        comparison_production_label="Production",
+        comparison_import_label="Grid import",
+        comparison_export_label="Grid export",
+        comparison_self_consumption_label="Self-consumption",
+        comparison_expense_label="Expenses",
+        comparison_income_label="Income",
+        comparison_co2_label="CO₂",
         conclusion_title="Conclusion",
         conclusion_overview_without_battery="Over the period, solar production reached {production} with {direct} consumed directly. Grid imports totalled {imported} while {exported} were sent back, and devices used {consumption}. Estimated total consumption reached {total_consumption} with {untracked_consumption} untracked.",
         conclusion_overview_with_battery="Over the period, solar production reached {production}: {direct} were consumed directly and {indirect} via the battery. Grid imports totalled {imported} while {exported} were sent back, and devices used {consumption}. Estimated total consumption reached {total_consumption} with {untracked_consumption} untracked.",
@@ -290,6 +329,19 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
             "co2_savings": "Zonnebesparing (eigen verbruik)",
 
         },
+        comparison_section_title="Periodevergelijking",
+        comparison_table_title="Vergelijkingsoverzicht",
+        comparison_header_category="Categorie",
+        comparison_header_difference="Verschil",
+        comparison_header_variation="Verandering",
+        comparison_consumption_label="Verbruik",
+        comparison_production_label="Productie",
+        comparison_import_label="Netimport",
+        comparison_export_label="Netexport",
+        comparison_self_consumption_label="Eigen verbruik",
+        comparison_expense_label="Kosten",
+        comparison_income_label="Opbrengsten",
+        comparison_co2_label="CO₂",
         conclusion_title="Conclusie",
         conclusion_overview_without_battery="In de periode bedroeg de zonneproductie {production} waarvan {direct} direct werd zelfverbruikt. Netimport kwam uit op {imported} terwijl {exported} werd teruggeleverd en toestellen verbruikten {consumption}. De geschatte totale consumptie bedraagt {total_consumption}, waarvan {untracked_consumption} niet gevolgd.",
         conclusion_overview_with_battery="In de periode bedroeg de zonneproductie {production}: {direct} werd rechtstreeks verbruikt en {indirect} via de batterij. Netimport bedroeg {imported} terwijl {exported} werd teruggeleverd en toestellen verbruikten {consumption}. De geschatte totale consumptie bedraagt {total_consumption}, waarvan {untracked_consumption} niet gevolgd.",
