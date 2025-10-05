@@ -748,7 +748,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         primary_context.totals,
         primary_context.metadata,
     )
-    comparison_insight_for_prompt: str | None = None
+    comparison_insight_text: str | None = None
     if comparison_context and conclusion_summary_for_advice is not None:
         comparison_summary_for_advice = _prepare_conclusion_summary(
             metrics,
@@ -756,7 +756,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             comparison_context.metadata,
         )
         if comparison_summary_for_advice is not None:
-            comparison_insight_for_prompt = _render_comparison_conclusion_insight(
+            comparison_insight_text = _render_comparison_conclusion_insight(
                 translations,
                 conclusion_summary_for_advice,
                 comparison_summary_for_advice,
@@ -766,7 +766,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     conclusion_prompt_text = _compose_conclusion_prompt(
         translations,
         conclusion_summary_for_advice,
-        comparison_insight_for_prompt,
+        comparison_insight_text,
     )
 
     raw_api_key = options.get(CONF_OPENAI_API_KEY)
@@ -806,6 +806,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         advice_text,
         conclusion_summary_for_advice,
         comparison_context,
+        comparison_insight_text,
     )
 
     download_url = await _async_resolve_download_url(hass, pdf_path)
@@ -1824,6 +1825,7 @@ def _build_pdf(
     advice_text: str,
     conclusion_summary: ConclusionSummary | None = None,
     comparison: PeriodStatisticsContext | None = None,
+    comparison_insight: str | None = None,
 
 ) -> str:
     """Assembler le PDF et le sauvegarder sur disque."""
@@ -2110,8 +2112,8 @@ def _build_pdf(
     if conclusion_summary:
         builder.add_section_title(translations.conclusion_title)
 
-        insight_text: str | None = None
-        if comparison_conclusion_summary and comparison is not None:
+        insight_text: str | None = comparison_insight
+        if insight_text is None and comparison_conclusion_summary and comparison is not None:
             insight_text = _render_comparison_conclusion_insight(
                 translations,
                 conclusion_summary,
@@ -2120,10 +2122,29 @@ def _build_pdf(
             )
 
         overview_text = _render_conclusion_overview(translations, conclusion_summary)
-        if insight_text and insight_text not in overview_text:
-            overview_text = f"{overview_text}\n\n{insight_text}"
+        paragraphs: list[str] = [overview_text]
 
-        builder.add_paragraph(overview_text)
+        if insight_text:
+            normalized_insight = insight_text.strip()
+            if normalized_insight:
+                normalized_existing = {
+                    paragraph.strip()
+                    for paragraph in paragraphs
+                    if paragraph.strip()
+                }
+                if normalized_insight not in normalized_existing:
+                    insight_lines = insight_text.splitlines()
+                    deduplicated_lines: list[str] = []
+                    seen_lines: set[str] = set()
+                    for line in insight_lines:
+                        if line in seen_lines:
+                            continue
+                        deduplicated_lines.append(line)
+                        seen_lines.add(line)
+
+                    paragraphs.append("\n".join(deduplicated_lines))
+
+        builder.add_paragraph("\n\n".join(paragraphs))
 
         if comparison_conclusion_summary and comparison is not None:
             insight_text = _render_comparison_conclusion_insight(
