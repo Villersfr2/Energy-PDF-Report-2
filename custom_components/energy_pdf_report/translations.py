@@ -57,6 +57,8 @@ class ReportTranslations:
     comparison_header_difference: str
     comparison_header_variation: str
     comparison_consumption_label: str
+    comparison_battery_charge_label: str
+    comparison_battery_discharge_label: str
     comparison_total_estimated_consumption_label: str
     comparison_untracked_consumption_label: str
     comparison_device_consumption_label: str
@@ -67,6 +69,8 @@ class ReportTranslations:
     comparison_expense_label: str
     comparison_income_label: str
     comparison_co2_label: str
+    comparison_water_consumption_label: str
+    comparison_gas_consumption_label: str
     conclusion_title: str
     conclusion_overview_without_battery: str
     conclusion_overview_with_battery: str
@@ -81,6 +85,7 @@ class ReportTranslations:
     conclusion_row_total_consumption_label: str
     conclusion_row_untracked_consumption_label: str
     conclusion_hint: str
+    conclusion_comparison_insight: str
     advice_section_title: str
     footer_path: str
     footer_page: str
@@ -154,6 +159,8 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_header_difference="Différence",
         comparison_header_variation="Variation",
         comparison_consumption_label="Consommation",
+        comparison_battery_charge_label="Charge batterie",
+        comparison_battery_discharge_label="Décharge batterie",
         comparison_total_estimated_consumption_label="Consommation totale estimée",
         comparison_untracked_consumption_label="Consommation non suivie",
         comparison_device_consumption_label="Consommation appareils",
@@ -164,6 +171,8 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_expense_label="Dépenses",
         comparison_income_label="Revenus",
         comparison_co2_label="CO₂",
+        comparison_water_consumption_label="Consommation eau",
+        comparison_gas_consumption_label="Consommation gaz / Mazout",
         conclusion_title="Conclusion",
         conclusion_overview_without_battery="Sur la période, la production solaire atteint {production} dont {direct} autoconsommés directement. Les importations réseau totalisent {imported} tandis que {exported} ont été réinjectés, pour une consommation des appareils de {consumption}. La consommation totale estimée atteint {total_consumption} dont {untracked_consumption} non suivie.",
         conclusion_overview_with_battery="Sur la période, la production solaire atteint {production} : {direct} ont été autoconsommés directement et {indirect} via la batterie. Les importations réseau totalisent {imported} tandis que {exported} ont été réinjectés, pour une consommation des appareils de {consumption}. La consommation totale estimée atteint {total_consumption} dont {untracked_consumption} non suivie.",
@@ -178,6 +187,13 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         conclusion_row_total_consumption_label="Consommation totale estimée",
         conclusion_row_untracked_consumption_label="Consommation non suivie",
         conclusion_hint="Pour approfondir l'évolution temporelle et comparer les périodes, référez-vous au tableau de bord EcoPilot.",
+        conclusion_comparison_insight=(
+            "Écart vs {label} : consommation totale estimée {total_delta} ({total_variation}), "
+            "import réseau {import_delta}, export réseau {export_delta}, "
+            "autoconsommation {self_consumption_delta} ({self_consumption_variation}), "
+            "consommation totale mesurée {consumption_delta} ({consumption_variation}), "
+            "consommation non suivie {untracked_delta} ({untracked_variation})."
+        ),
         advice_section_title="Les conseils personnalisés EcoPilot",
         footer_path="Chemin du fichier : {path}",
         footer_page="Page {current} sur {total}",
@@ -249,6 +265,8 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_header_difference="Difference",
         comparison_header_variation="Change",
         comparison_consumption_label="Consumption",
+        comparison_battery_charge_label="Battery charge",
+        comparison_battery_discharge_label="Battery discharge",
         comparison_total_estimated_consumption_label="Estimated total consumption",
         comparison_untracked_consumption_label="Untracked consumption",
         comparison_device_consumption_label="Device consumption",
@@ -259,6 +277,8 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_expense_label="Expenses",
         comparison_income_label="Income",
         comparison_co2_label="CO₂",
+        comparison_water_consumption_label="Water consumption",
+        comparison_gas_consumption_label="Gas / fuel consumption",
         conclusion_title="Conclusion",
         conclusion_overview_without_battery="Over the period, solar production reached {production} with {direct} consumed directly. Grid imports totalled {imported} while {exported} were sent back, and devices used {consumption}. Estimated total consumption reached {total_consumption} with {untracked_consumption} untracked.",
         conclusion_overview_with_battery="Over the period, solar production reached {production}: {direct} were consumed directly and {indirect} via the battery. Grid imports totalled {imported} while {exported} were sent back, and devices used {consumption}. Estimated total consumption reached {total_consumption} with {untracked_consumption} untracked.",
@@ -273,6 +293,13 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         conclusion_row_total_consumption_label="Estimated total consumption",
         conclusion_row_untracked_consumption_label="Untracked consumption",
         conclusion_hint="For deeper time-based analysis and comparisons, refer to EcoPilot's dashboard.",
+        conclusion_comparison_insight=(
+            "Gap vs {label}: estimated total consumption {total_delta} ({total_variation}), "
+            "grid import {import_delta}, grid export {export_delta}, "
+            "self-consumption {self_consumption_delta} ({self_consumption_variation}), "
+            "measured consumption {consumption_delta} ({consumption_variation}), "
+            "untracked consumption {untracked_delta} ({untracked_variation})."
+        ),
         advice_section_title="EcoPilot tailored advice",
         footer_path="File path: {path}",
         footer_page="Page {current} of {total}",
@@ -344,6 +371,8 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_header_difference="Verschil",
         comparison_header_variation="Verandering",
         comparison_consumption_label="Verbruik",
+        comparison_battery_charge_label="Batterij laden",
+        comparison_battery_discharge_label="Batterij ontladen",
         comparison_total_estimated_consumption_label="Geschat totaalverbruik",
         comparison_untracked_consumption_label="Niet-opgevolgd verbruik",
         comparison_device_consumption_label="Apparaatverbruik",
@@ -354,6 +383,8 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_expense_label="Kosten",
         comparison_income_label="Opbrengsten",
         comparison_co2_label="CO₂",
+        comparison_water_consumption_label="Waterverbruik",
+        comparison_gas_consumption_label="Gas/mazoutverbruik",
         conclusion_title="Conclusie",
         conclusion_overview_without_battery="In de periode bedroeg de zonneproductie {production} waarvan {direct} direct werd zelfverbruikt. Netimport kwam uit op {imported} terwijl {exported} werd teruggeleverd en toestellen verbruikten {consumption}. De geschatte totale consumptie bedraagt {total_consumption}, waarvan {untracked_consumption} niet gevolgd.",
         conclusion_overview_with_battery="In de periode bedroeg de zonneproductie {production}: {direct} werd rechtstreeks verbruikt en {indirect} via de batterij. Netimport bedroeg {imported} terwijl {exported} werd teruggeleverd en toestellen verbruikten {consumption}. De geschatte totale consumptie bedraagt {total_consumption}, waarvan {untracked_consumption} niet gevolgd.",
@@ -368,6 +399,13 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         conclusion_row_total_consumption_label="Geschatte totale consumptie",
         conclusion_row_untracked_consumption_label="Niet gevolgde consumptie",
         conclusion_hint="Raadpleeg het Energiadashboard van EcoPilot voor een diepere tijdsanalyse en vergelijkingen.",
+        conclusion_comparison_insight=(
+            "Verschil t.o.v. {label}: geschat totaalverbruik {total_delta} ({total_variation}), "
+            "netimport {import_delta}, netexport {export_delta}, "
+            "autoconsumptie {self_consumption_delta} ({self_consumption_variation}), "
+            "gemeten verbruik {consumption_delta} ({consumption_variation}), "
+            "niet-geregistreerd verbruik {untracked_delta} ({untracked_variation})."
+        ),
         advice_section_title="EcoPilot persoonlijk advies",
         footer_path="Bestandspad: {path}",
         footer_page="Pagina {current} van {total}",
