@@ -50,6 +50,9 @@ from .const import (
     CONF_END_DATE,
     CONF_FILENAME_PATTERN,
     CONF_OUTPUT_DIR,
+    CONF_COMPARE,
+    CONF_COMPARE_START_DATE,
+    CONF_COMPARE_END_DATE,
     CONF_PERIOD,
     CONF_PRICE,
     CONF_PRICE_ELECTRICITY_EXPORT,
@@ -107,6 +110,9 @@ SERVICE_GENERATE_SCHEMA = vol.Schema(
         vol.Optional(CONF_DASHBOARD): cv.string,
         vol.Optional(CONF_CO2): cv.boolean,
         vol.Optional(CONF_PRICE): cv.boolean,
+        vol.Optional(CONF_COMPARE): cv.boolean,
+        vol.Optional(CONF_COMPARE_START_DATE): cv.date,
+        vol.Optional(CONF_COMPARE_END_DATE): cv.date,
     }
 )
 
