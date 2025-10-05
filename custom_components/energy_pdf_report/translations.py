@@ -57,6 +57,9 @@ class ReportTranslations:
     comparison_header_difference: str
     comparison_header_variation: str
     comparison_consumption_label: str
+    comparison_total_estimated_consumption_label: str
+    comparison_untracked_consumption_label: str
+    comparison_device_consumption_label: str
     comparison_production_label: str
     comparison_import_label: str
     comparison_export_label: str
@@ -151,6 +154,9 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_header_difference="Différence",
         comparison_header_variation="Variation",
         comparison_consumption_label="Consommation",
+        comparison_total_estimated_consumption_label="Consommation totale estimée",
+        comparison_untracked_consumption_label="Consommation non suivie",
+        comparison_device_consumption_label="Consommation appareils",
         comparison_production_label="Production",
         comparison_import_label="Import réseau",
         comparison_export_label="Export réseau",
@@ -243,6 +249,9 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_header_difference="Difference",
         comparison_header_variation="Change",
         comparison_consumption_label="Consumption",
+        comparison_total_estimated_consumption_label="Estimated total consumption",
+        comparison_untracked_consumption_label="Untracked consumption",
+        comparison_device_consumption_label="Device consumption",
         comparison_production_label="Production",
         comparison_import_label="Grid import",
         comparison_export_label="Grid export",
@@ -335,6 +344,9 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_header_difference="Verschil",
         comparison_header_variation="Verandering",
         comparison_consumption_label="Verbruik",
+        comparison_total_estimated_consumption_label="Geschat totaalverbruik",
+        comparison_untracked_consumption_label="Niet-opgevolgd verbruik",
+        comparison_device_consumption_label="Apparaatverbruik",
         comparison_production_label="Productie",
         comparison_import_label="Netimport",
         comparison_export_label="Netexport",

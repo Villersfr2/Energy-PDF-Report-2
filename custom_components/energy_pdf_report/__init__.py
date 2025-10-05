@@ -2067,6 +2067,21 @@ def _build_pdf(
 
 
 
+    if comparison is not None:
+        comparison_table = build_comparison_section(
+            translations,
+            metrics,
+            primary,
+            comparison,
+            primary_label=primary.label,
+            comparison_label=comparison.label,
+            primary_summary=conclusion_summary,
+            comparison_summary=comparison_conclusion_summary,
+        )
+
+        builder.add_section_title(translations.comparison_section_title)
+        builder.add_table(comparison_table)
+
     if conclusion_summary:
         builder.add_section_title(translations.conclusion_title)
 
@@ -2138,21 +2153,6 @@ def _build_pdf(
 
     builder.add_section_title(translations.advice_section_title)
     builder.add_paragraph(advice_content)
-
-    if comparison is not None:
-        comparison_table = build_comparison_section(
-            translations,
-            metrics,
-            primary,
-            comparison,
-            primary_label=primary.label,
-            comparison_label=comparison.label,
-            primary_summary=conclusion_summary,
-            comparison_summary=comparison_conclusion_summary,
-        )
-
-        builder.add_section_title(translations.comparison_section_title)
-        builder.add_table(comparison_table)
 
     builder.add_footer(translations.footer_path.format(path=file_path))
 
