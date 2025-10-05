@@ -172,7 +172,9 @@ _TRANSLATIONS: dict[str, ReportTranslations] = {
         comparison_income_label="Revenus",
         comparison_co2_label="CO₂",
         comparison_water_consumption_label="Consommation eau",
-        comparison_gas_consumption_label="Consommation gaz / mazout",
+
+        comparison_gas_consumption_label="Consommation gaz / Mazout",
+
         conclusion_title="Conclusion",
         conclusion_overview_without_battery="Sur la période, la production solaire atteint {production} dont {direct} autoconsommés directement. Les importations réseau totalisent {imported} tandis que {exported} ont été réinjectés, pour une consommation des appareils de {consumption}. La consommation totale estimée atteint {total_consumption} dont {untracked_consumption} non suivie.",
         conclusion_overview_with_battery="Sur la période, la production solaire atteint {production} : {direct} ont été autoconsommés directement et {indirect} via la batterie. Les importations réseau totalisent {imported} tandis que {exported} ont été réinjectés, pour une consommation des appareils de {consumption}. La consommation totale estimée atteint {total_consumption} dont {untracked_consumption} non suivie.",

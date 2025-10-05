@@ -2080,7 +2080,9 @@ def _build_pdf(
         )
 
         comparison_table.column_widths = builder.compute_column_widths(
-            (0.32, 0.22, 0.22, 0.12, 0.12)
+
+            (0.38, 0.2, 0.2, 0.11, 0.11)
+
         )
 
         builder.add_section_title(translations.comparison_section_title)
@@ -2089,7 +2091,19 @@ def _build_pdf(
     if conclusion_summary:
         builder.add_section_title(translations.conclusion_title)
 
+        insight_text: str | None = None
+        if comparison_conclusion_summary and comparison is not None:
+            insight_text = _render_comparison_conclusion_insight(
+                translations,
+                conclusion_summary,
+                comparison_conclusion_summary,
+                comparison.label,
+            )
+
         overview_text = _render_conclusion_overview(translations, conclusion_summary)
+        if insight_text:
+            overview_text = f"{overview_text}\n\n{insight_text}"
+
         builder.add_paragraph(overview_text)
 
         if comparison_conclusion_summary and comparison is not None:

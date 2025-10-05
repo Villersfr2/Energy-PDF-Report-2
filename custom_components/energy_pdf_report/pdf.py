@@ -308,7 +308,7 @@ class EnergyPDFBuilder:
         else:
             column_widths = [self._available_width / len(headers)] * len(headers)
 
-        header_height = 8
+        header_height = 9
         row_height = 7
 
         decorate_first_column = config.first_column_is_category
@@ -318,7 +318,7 @@ class EnergyPDFBuilder:
         self._ensure_space(header_height + 6)
         self._pdf.cell(0, 9, config.title, ln=True)
 
-        self._pdf.set_font(FONT_FAMILY, "B", 10)
+        self._pdf.set_font(FONT_FAMILY, "B", 11)
         self._pdf.set_fill_color(*PRIMARY_COLOR)
         self._pdf.set_text_color(*HEADER_TEXT_COLOR)
         self._pdf.set_draw_color(*BORDER_COLOR)
@@ -797,16 +797,19 @@ def _classify_metric_category(category: str) -> set[str]:
         if not any(keyword in lowered for keyword in discharge_keywords):
             result.add("battery_charge")
 
-    if "consommation" in lowered or "consumption" in lowered:
+
+    is_consumption = "consommation" in lowered or "consumption" in lowered
+    if is_consumption:
         result.add("consumption")
 
-    water_keywords = ("eau", "water", "wasser", "acqua")
-    if any(keyword in lowered for keyword in water_keywords):
-        result.add("consumption_water")
+        water_keywords = ("eau", "water", "wasser", "acqua")
+        if any(keyword in lowered for keyword in water_keywords):
+            result.add("consumption_water")
 
-    gas_keywords = ("gaz", "gas", "gás", "gaso", "fioul", "mazout", "fuel", "oil")
-    if any(keyword in lowered for keyword in gas_keywords):
-        result.add("consumption_gas")
+        gas_keywords = ("gaz", "gas", "gás", "gaso", "fioul", "mazout", "fuel", "oil")
+        if any(keyword in lowered for keyword in gas_keywords):
+            result.add("consumption_gas")
+
 
     if "production" in lowered:
         result.add("production")
