@@ -43,3 +43,18 @@ generate:
       name: Inclure la section coûts
       description: Active l'inclusion des statistiques de prix dans le rapport pour cet appel (par défaut la valeur des options est utilisée).
       example: false
+
+    compare:
+      name: Activer la comparaison
+      description: Active l'ajout d'une période de comparaison dans le rapport pour cet appel.
+      example: true
+
+    compare_start_date:
+      name: Date de début de comparaison
+      description: Date locale de début (inclus) de la période de comparaison.
+      example: "2023-12-01"
+
+    compare_end_date:
+      name: Date de fin de comparaison
+      description: Date locale de fin (inclus) de la période de comparaison.
+      example: "2023-12-31"
