@@ -158,6 +158,27 @@ class DashboardSelection:
 
 
 @dataclass(frozen=True, slots=True)
+class StatisticsResult:
+    """Résultat brut d'une récupération de statistiques."""
+
+    stats: dict[str, list[StatisticsRow]]
+    metadata: dict[str, tuple[int, StatisticMetaData]]
+
+
+@dataclass(slots=True)
+class PeriodStatisticsContext:
+    """Regroupe les informations statistiques pour une période donnée."""
+
+    stats: dict[str, list[StatisticsRow]]
+    metadata: dict[str, tuple[int, StatisticMetaData]]
+    totals: dict[str, float]
+    display_start: datetime
+    display_end: datetime
+    bucket: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class ConclusionSummary:
     """Résultat agrégé pour la conclusion du rapport."""
 
@@ -563,6 +584,42 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     call_data[CONF_PERIOD] = period
 
     start, end, display_start, display_end, bucket = _resolve_period(hass, call_data)
+
+    comparison_period: dict[str, Any] | None = None
+    if call.data.get(CONF_COMPARE):
+        try:
+            compare_start_date = _coerce_service_date(
+                call.data.get(CONF_COMPARE_START_DATE), CONF_COMPARE_START_DATE
+            )
+            compare_end_date = _coerce_service_date(
+                call.data.get(CONF_COMPARE_END_DATE), CONF_COMPARE_END_DATE
+            )
+        except HomeAssistantError as err:
+            _LOGGER.error("Mode comparaison désactivé: %s", err)
+        else:
+            if compare_start_date is None or compare_end_date is None:
+                _LOGGER.error(
+                    "Mode comparaison désactivé: les dates de début et de fin doivent être renseignées."
+                )
+            elif compare_end_date < compare_start_date:
+                _LOGGER.error(
+                    "Mode comparaison désactivé: la date de fin de comparaison doit être postérieure à la date de début."
+                )
+            else:
+                timezone = _select_timezone(hass)
+                compare_start_local = _localize_date(compare_start_date, timezone)
+                compare_end_local = _localize_date(compare_end_date, timezone)
+                compare_end_exclusive = compare_end_local + timedelta(days=1)
+                comparison_period = {
+                    "start": dt_util.as_utc(compare_start_local),
+                    "end": dt_util.as_utc(compare_end_exclusive),
+                    "display_start": compare_start_local,
+                    "display_end": compare_end_exclusive - timedelta(seconds=1),
+                    "bucket": _select_bucket(
+                        period, compare_start_local, compare_end_exclusive
+                    ),
+                }
+
     option_co2_enabled = bool(options.get(CONF_CO2, DEFAULT_CO2))
     option_price_enabled = bool(options.get(CONF_PRICE, DEFAULT_PRICE))
 
@@ -583,8 +640,50 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             "Aucune statistique n'a été trouvée dans les préférences énergie."
         )
 
-    stats_map, metadata = await _collect_statistics(hass, metrics, start, end, bucket)
-    totals = _calculate_totals(metrics, stats_map)
+    stats_result = await _collect_statistics(
+        hass, manager, metrics, start, end, bucket
+    )
+    totals = _calculate_totals(metrics, stats_result.stats)
+    primary_context = PeriodStatisticsContext(
+        stats=stats_result.stats,
+        metadata=stats_result.metadata,
+        totals=totals,
+        display_start=display_start,
+        display_end=display_end,
+        bucket=bucket,
+        label=_format_period_label(display_start, display_end),
+    )
+
+    comparison_context: PeriodStatisticsContext | None = None
+    if comparison_period:
+        try:
+            comparison_stats = await _collect_statistics(
+                hass,
+                manager,
+                metrics,
+                comparison_period["start"],
+                comparison_period["end"],
+                comparison_period["bucket"],
+            )
+        except Exception as err:  # pragma: no cover - defensive logging
+            _LOGGER.error(
+                "Mode comparaison désactivé: récupération des statistiques impossible (%s)",
+                err,
+            )
+        else:
+            comparison_totals = _calculate_totals(metrics, comparison_stats.stats)
+            comparison_context = PeriodStatisticsContext(
+                stats=comparison_stats.stats,
+                metadata=comparison_stats.metadata,
+                totals=comparison_totals,
+                display_start=comparison_period["display_start"],
+                display_end=comparison_period["display_end"],
+                bucket=comparison_period["bucket"],
+                label=_format_period_label(
+                    comparison_period["display_start"],
+                    comparison_period["display_end"],
+                ),
+            )
 
     co2_definitions: list[CO2SensorDefinition] = []
     if co2_enabled:
@@ -639,8 +738,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
     conclusion_summary_for_advice = _prepare_conclusion_summary(
         metrics,
-        totals,
-        metadata,
+        primary_context.totals,
+        primary_context.metadata,
     )
     conclusion_prompt_text = _compose_conclusion_prompt(
         translations, conclusion_summary_for_advice
@@ -662,12 +761,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     pdf_path = await hass.async_add_executor_job(
         _build_pdf,
         metrics,
-        totals,
-        metadata,
+        primary_context,
         cost_mapping,
-        display_start,
-        display_end,
-        bucket,
         output_dir,
         filename,
         filename_pattern,
@@ -686,6 +781,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
         advice_text,
         conclusion_summary_for_advice,
+        comparison_context,
     )
 
     download_url = await _async_resolve_download_url(hass, pdf_path)
@@ -1273,18 +1369,116 @@ def _build_cost_mapping(
     return mapping
 
 
+def _is_statistics_map(candidate: Any) -> bool:
+    """Déterminer si l'objet fourni correspond au format de statistiques attendu."""
+
+    if not isinstance(candidate, dict):
+        return False
+
+    for key, value in candidate.items():
+        if not isinstance(key, str):
+            return False
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            return False
+
+    return True
+
+
+def _normalize_statistics_map(result: Any) -> dict[str, list[StatisticsRow]] | None:
+    """Essayer d'extraire la carte de statistiques d'un résultat manager."""
+
+    if result is None:
+        return None
+
+    if _is_statistics_map(result):
+        return result
+
+    if isinstance(result, tuple) and result:
+        first = result[0]
+        if _is_statistics_map(first):
+            return first
+
+    if isinstance(result, dict):
+        for key in ("statistics", "stats", "data", "result"):
+            candidate = result.get(key)
+            if _is_statistics_map(candidate):
+                return candidate
+
+    return None
+
+
+async def _async_collect_statistics_via_manager(
+    manager: Any,
+    hass: HomeAssistant,
+    statistic_ids: set[str],
+    start: datetime,
+    end: datetime,
+    bucket: str,
+) -> dict[str, list[StatisticsRow]] | None:
+    """Tenter de récupérer les statistiques via le gestionnaire énergie."""
+
+    if manager is None or not statistic_ids:
+        return None
+
+    method_names = (
+        "async_get_statistics",
+        "async_get_energy_statistics",
+        "async_get_dashboard_statistics",
+        "get_statistics",
+    )
+
+    for name in method_names:
+        method = getattr(manager, name, None)
+        if not callable(method):
+            continue
+
+        arg_variants = (
+            (statistic_ids, start, end, bucket),
+            (hass, statistic_ids, start, end, bucket),
+            (statistic_ids, start, end, bucket, None),
+            (hass, statistic_ids, start, end, bucket, None),
+        )
+
+        for args in arg_variants:
+            try:
+                result = method(*args)
+            except TypeError:
+                continue
+            except Exception as err:  # pragma: no cover - best effort logging
+                _LOGGER.debug(
+                    "Erreur lors de l'appel de %s pour récupérer les statistiques: %s",
+                    name,
+                    err,
+                )
+                break
+
+            result = await _await_if_needed(result)
+            normalized = _normalize_statistics_map(result)
+            if normalized is not None:
+                return normalized
+
+    return None
+
+
 async def _collect_statistics(
     hass: HomeAssistant,
+    manager: Any,
     metrics: Iterable[MetricDefinition],
     start: datetime,
     end: datetime,
     bucket: str,
-) -> tuple[dict[str, list[StatisticsRow]], dict[str, tuple[int, StatisticMetaData]]]:
+) -> StatisticsResult:
     """Récupérer les statistiques depuis recorder."""
 
     statistic_ids = {metric.statistic_id for metric in metrics}
     if not statistic_ids:
-        return {}, {}
+        return StatisticsResult({}, {})
+
+    stats_map = await _async_collect_statistics_via_manager(
+        manager, hass, statistic_ids, start, end, bucket
+    )
 
     try:
         instance = recorder.get_instance(hass)
@@ -1369,18 +1563,19 @@ async def _collect_statistics(
         if friendly_name:
             meta["name"] = friendly_name
 
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        bucket,
-        None,
-        {"change"},
-    )
+    if stats_map is None:
+        stats_map = await instance.async_add_executor_job(
+            recorder_statistics.statistics_during_period,
+            hass,
+            start,
+            end,
+            statistic_ids,
+            bucket,
+            None,
+            {"change"},
+        )
 
-    return stats_map, metadata
+    return StatisticsResult(stats_map, metadata)
 
 
 async def _collect_co2_statistics(
@@ -1576,14 +1771,16 @@ def _discover_logo_candidate(output_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _format_period_label(start: datetime, end: datetime) -> str:
+    """Créer un libellé formaté pour la période affichée."""
+
+    return f"{start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}"
+
+
 def _build_pdf(
     metrics: list[MetricDefinition],
-    totals: dict[str, float],
-    metadata: dict[str, tuple[int, StatisticMetaData]],
+    primary: PeriodStatisticsContext,
     cost_mapping: Mapping[str, str],
-    display_start: datetime,
-    display_end: datetime,
-    bucket: str,
     output_dir: Path,
     filename: str | None,
     filename_pattern: str,
@@ -1602,6 +1799,7 @@ def _build_pdf(
 
     advice_text: str,
     conclusion_summary: ConclusionSummary | None = None,
+    comparison: PeriodStatisticsContext | None = None,
 
 ) -> str:
     """Assembler le PDF et le sauvegarder sur disque."""
@@ -1615,8 +1813,8 @@ def _build_pdf(
 
     if not filename:
         context = {
-            "start": display_start.date().isoformat(),
-            "end": display_end.date().isoformat(),
+            "start": primary.display_start.date().isoformat(),
+            "end": primary.display_end.date().isoformat(),
             "period": period,
             "language": translations.language,
         }
@@ -1643,13 +1841,13 @@ def _build_pdf(
 
     file_path = output_dir / filename
 
-    period_label = f"{display_start.strftime('%d/%m/%Y')} → {display_end.strftime('%d/%m/%Y')}"
+    period_label = primary.label
 
-    bucket_label = translations.bucket_labels.get(bucket, bucket)
+    bucket_label = translations.bucket_labels.get(primary.bucket, primary.bucket)
     logo_path = _discover_logo_candidate(output_dir)
     subtitle = translations.cover_subtitle.format(
-        start=display_start.strftime("%d/%m/%Y"),
-        end=display_end.strftime("%d/%m/%Y"),
+        start=primary.display_start.strftime("%d/%m/%Y"),
+        end=primary.display_end.strftime("%d/%m/%Y"),
     )
     builder = EnergyPDFBuilder(
         translations.pdf_title,
@@ -1683,12 +1881,14 @@ def _build_pdf(
     builder.add_paragraph(translations.summary_intro)
 
 
-    summary_rows, summary_series = _prepare_summary_rows(metrics, totals, metadata)
+    summary_rows, summary_series = _prepare_summary_rows(
+        metrics, primary.totals, primary.metadata
+    )
     if conclusion_summary is None:
         conclusion_summary = _prepare_conclusion_summary(
             metrics,
-            totals,
-            metadata,
+            primary.totals,
+            primary.metadata,
         )
 
     summary_display_rows = list(summary_rows)
@@ -1736,8 +1936,8 @@ def _build_pdf(
 
     detail_rows = _prepare_detail_rows(
         metrics,
-        totals,
-        metadata,
+        primary.totals,
+        primary.metadata,
         cost_mapping,
     )
     detail_widths = builder.compute_column_widths((0.25, 0.51, 0.14, 0.10))
