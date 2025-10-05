@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 from fpdf import FPDF
 
@@ -619,4 +619,257 @@ def _format_number(value: float) -> str:
 
 
 
-__all__ = ["EnergyPDFBuilder", "TableConfig"]
+_MISSING_VALUE = "—"
+
+
+def build_comparison_section(
+    translations: ReportTranslations,
+    metrics: Sequence[Any],
+    primary_context: Any,
+    comparison_context: Any,
+    *,
+    primary_label: str,
+    comparison_label: str,
+    primary_summary: Any | None = None,
+    comparison_summary: Any | None = None,
+) -> TableConfig:
+    """Construire la configuration du tableau de comparaison des périodes."""
+
+    primary_values, primary_units = _aggregate_comparison_values(
+        metrics, primary_context
+    )
+    comparison_values, comparison_units = _aggregate_comparison_values(
+        metrics, comparison_context
+    )
+
+    _inject_self_consumption(primary_values, primary_units, primary_summary)
+    _inject_self_consumption(
+        comparison_values, comparison_units, comparison_summary
+    )
+
+    rows: list[tuple[str, str, str, str, str]] = []
+    for key, label_attr, fallback_unit in _COMPARISON_ROWS:
+        label = getattr(translations, label_attr)
+        unit = (
+            primary_units.get(key)
+            or comparison_units.get(key)
+            or fallback_unit
+            or ""
+        )
+        primary_value = primary_values.get(key)
+        comparison_value = comparison_values.get(key)
+
+        rows.append(
+            (
+                label,
+                _format_value_with_unit(primary_value, unit),
+                _format_value_with_unit(comparison_value, unit),
+                _format_difference(primary_value, comparison_value, unit),
+                _format_percentage_change(primary_value, comparison_value),
+            )
+        )
+
+    headers = (
+        translations.comparison_header_category,
+        primary_label,
+        comparison_label,
+        translations.comparison_header_difference,
+        translations.comparison_header_variation,
+    )
+
+    return TableConfig(
+        title=translations.comparison_table_title,
+        headers=headers,
+        rows=rows,
+        first_column_is_category=True,
+    )
+
+
+def _aggregate_comparison_values(
+    metrics: Sequence[Any],
+    context: Any,
+) -> tuple[dict[str, float | None], dict[str, str]]:
+    """Agréguer les valeurs nécessaires pour la comparaison."""
+
+    totals: Mapping[str, float] = getattr(context, "totals", {}) or {}
+    metadata: Mapping[str, tuple[int, Mapping[str, Any]]] = (
+        getattr(context, "metadata", {}) or {}
+    )
+
+    aggregated: dict[str, float | None] = {
+        key: None
+        for key in (
+            "consumption",
+            "production",
+            "import",
+            "export",
+            "expenses",
+            "income",
+            "co2",
+            "self_consumption",
+        )
+    }
+    units: dict[str, str] = {key: "" for key in aggregated}
+
+    for metric in metrics:
+        statistic_id = getattr(metric, "statistic_id", None)
+        if not statistic_id:
+            continue
+        total = totals.get(statistic_id)
+        if total is None:
+            continue
+
+        keys = _classify_metric_category(getattr(metric, "category", ""))
+        if not keys:
+            continue
+
+        unit = _metadata_unit(metadata.get(statistic_id))
+        for key in keys:
+            current = aggregated[key]
+            aggregated[key] = total if current is None else current + total
+            if not units[key] and unit:
+                units[key] = unit
+
+    if not units.get("co2"):
+        units["co2"] = "kgCO₂e"
+
+    return aggregated, units
+
+
+def _inject_self_consumption(
+    aggregated: dict[str, float | None],
+    units: dict[str, str],
+    summary: Any | None,
+) -> None:
+    """Ajouter l'autoconsommation si le résumé de conclusion est disponible."""
+
+    if summary is None:
+        return
+
+    direct = getattr(summary, "direct", None)
+    indirect = getattr(summary, "indirect", None)
+
+    total: float | None
+    if direct is None and indirect is None:
+        total = None
+    else:
+        total = (direct or 0.0) + (indirect or 0.0)
+
+    aggregated["self_consumption"] = total
+    unit = getattr(summary, "energy_unit", "") or ""
+    if unit:
+        units["self_consumption"] = unit
+
+
+def _classify_metric_category(category: str) -> set[str]:
+    """Déterminer les catégories de comparaison associées à un libellé de métrique."""
+
+    lowered = category.lower()
+    lowered = lowered.replace("co₂", "co2")
+
+    result: set[str] = set()
+
+    if "consommation" in lowered or "charge" in lowered:
+        result.add("consumption")
+    if "production" in lowered or "décharge" in lowered or "decharge" in lowered:
+        result.add("production")
+    if "import" in lowered:
+        result.add("import")
+    if "export" in lowered:
+        result.add("export")
+    if any(keyword in lowered for keyword in ("coût", "cout", "cost", "dépense", "depense")):
+        result.add("expenses")
+    if any(keyword in lowered for keyword in ("compensation", "revenu", "income")):
+        result.add("income")
+    if any(keyword in lowered for keyword in ("co2", "émission", "emission")):
+        result.add("co2")
+
+    return result
+
+
+def _metadata_unit(entry: Any) -> str:
+    """Extraire l'unité depuis une entrée de métadonnées recorder."""
+
+    if not entry or not isinstance(entry, tuple) or len(entry) < 2:
+        return ""
+
+    metadata = entry[1]
+    if isinstance(metadata, Mapping):
+        unit = metadata.get("unit_of_measurement")
+        if unit:
+            return str(unit)
+    return ""
+
+
+def _format_value_with_unit(value: float | None, unit: str) -> str:
+    """Formater une valeur pour l'affichage avec son unité."""
+
+    if value is None:
+        return _MISSING_VALUE
+
+    sanitized = _sanitize_number(value)
+    formatted = _format_number(sanitized)
+    return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _format_difference(
+    primary: float | None, comparison: float | None, unit: str
+) -> str:
+    """Formater la différence absolue entre deux valeurs."""
+
+    if primary is None or comparison is None:
+        return _MISSING_VALUE
+
+    delta = _sanitize_number(primary) - _sanitize_number(comparison)
+    delta = _sanitize_number(delta)
+    formatted = _format_signed(delta)
+    return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _format_percentage_change(
+    primary: float | None, comparison: float | None
+) -> str:
+    """Formater la variation relative entre deux valeurs."""
+
+    if primary is None or comparison is None:
+        return _MISSING_VALUE
+
+    baseline = _sanitize_number(comparison)
+    if abs(baseline) < 1e-9:
+        return _MISSING_VALUE
+
+    variation = ((_sanitize_number(primary) - baseline) / baseline) * 100
+    variation = _sanitize_number(variation)
+    return f"{_format_signed(variation)} %"
+
+
+def _sanitize_number(value: float) -> float:
+    """Nettoyer une valeur numérique en neutralisant les très petits résidus."""
+
+    if abs(value) < 1e-9:
+        return 0.0
+    return value
+
+
+def _format_signed(value: float) -> str:
+    """Formater un nombre en préfixant explicitement le signe positif."""
+
+    formatted = _format_number(value)
+    if value > 0:
+        return f"+{formatted}"
+    return formatted
+
+
+_COMPARISON_ROWS: Tuple[Tuple[str, str, str | None], ...] = (
+    ("consumption", "comparison_consumption_label", None),
+    ("production", "comparison_production_label", None),
+    ("import", "comparison_import_label", None),
+    ("export", "comparison_export_label", None),
+    ("self_consumption", "comparison_self_consumption_label", None),
+    ("expenses", "comparison_expense_label", None),
+    ("income", "comparison_income_label", None),
+    ("co2", "comparison_co2_label", "kgCO₂e"),
+)
+
+
+__all__ = ["EnergyPDFBuilder", "TableConfig", "build_comparison_section"]

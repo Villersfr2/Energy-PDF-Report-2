@@ -83,7 +83,12 @@ from .const import (
     VALID_PERIODS,
 )
 from .ai_helper import generate_advice, get_fallback_message
-from .pdf import EnergyPDFBuilder, TableConfig, _decorate_category
+from .pdf import (
+    EnergyPDFBuilder,
+    TableConfig,
+    _decorate_category,
+    build_comparison_section,
+)
 
 from .translations import ReportTranslations, get_report_translations
 
@@ -1891,6 +1896,14 @@ def _build_pdf(
             primary.metadata,
         )
 
+    comparison_conclusion_summary: ConclusionSummary | None = None
+    if comparison is not None:
+        comparison_conclusion_summary = _prepare_conclusion_summary(
+            metrics,
+            comparison.totals,
+            comparison.metadata,
+        )
+
     summary_display_rows = list(summary_rows)
     summary_emphasize_rows: list[int] = list(range(len(summary_display_rows)))
 
@@ -2125,6 +2138,21 @@ def _build_pdf(
 
     builder.add_section_title(translations.advice_section_title)
     builder.add_paragraph(advice_content)
+
+    if comparison is not None:
+        comparison_table = build_comparison_section(
+            translations,
+            metrics,
+            primary,
+            comparison,
+            primary_label=primary.label,
+            comparison_label=comparison.label,
+            primary_summary=conclusion_summary,
+            comparison_summary=comparison_conclusion_summary,
+        )
+
+        builder.add_section_title(translations.comparison_section_title)
+        builder.add_table(comparison_table)
 
     builder.add_footer(translations.footer_path.format(path=file_path))
 
