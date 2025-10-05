@@ -8,7 +8,11 @@ from typing import Final
 
 import aiohttp
 
-FALLBACK_MESSAGE: Final[str] = "La fonction n’est pas active actuellement."
+FALLBACK_MESSAGES: Final[dict[str, str]] = {
+    "fr": "La fonction n’est pas active actuellement.",
+    "en": "This feature is currently not active.",
+    "nl": "Deze functie is momenteel niet actief.",
+}
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,17 +51,25 @@ _USER_INSTRUCTIONS: Final[dict[str, str]] = {
 _API_URL: Final[str] = "https://api.openai.com/v1/chat/completions"
 
 
+def get_fallback_message(language: str) -> str:
+    """Return the localized fallback message, defaulting to French."""
+
+    return FALLBACK_MESSAGES.get(language, FALLBACK_MESSAGES["fr"])
+
+
 async def generate_advice(conclusion: str, api_key: str | None, language: str) -> str:
     """Générer un conseil professionnel personnalisé depuis OpenAI."""
 
     normalized_api_key = (api_key or "").strip()
     conclusion_text = (conclusion or "").strip()
 
+    fallback_message = get_fallback_message(language)
+
     if not normalized_api_key:
-        return FALLBACK_MESSAGE
+        return fallback_message
 
     if not conclusion_text:
-        return FALLBACK_MESSAGE
+        return fallback_message
 
     system_prompt = _SYSTEM_PROMPTS.get(language, _SYSTEM_PROMPTS["fr"])
     user_instruction = _USER_INSTRUCTIONS.get(language, _USER_INSTRUCTIONS["fr"])
@@ -94,15 +106,15 @@ async def generate_advice(conclusion: str, api_key: str | None, language: str) -
                     _LOGGER.warning(
                         "OpenAI API error (status: %s): %s", response.status, body
                     )
-                    return FALLBACK_MESSAGE
+                    return fallback_message
 
                 data = await response.json()
     except asyncio.TimeoutError:
         _LOGGER.warning("OpenAI API request timed out")
-        return FALLBACK_MESSAGE
+        return fallback_message
     except aiohttp.ClientError as err:
         _LOGGER.warning("OpenAI API request failed: %s", err)
-        return FALLBACK_MESSAGE
+        return fallback_message
 
     try:
         choice = data["choices"][0]
@@ -110,7 +122,7 @@ async def generate_advice(conclusion: str, api_key: str | None, language: str) -
         content = message.get("content")
     except (KeyError, IndexError, TypeError):
         _LOGGER.warning("Unexpected OpenAI API response structure: %s", data)
-        return FALLBACK_MESSAGE
+        return fallback_message
 
     if isinstance(content, str):
         advice = content.strip()
@@ -126,9 +138,9 @@ async def generate_advice(conclusion: str, api_key: str | None, language: str) -
         advice = ""
 
     if not advice:
-        return FALLBACK_MESSAGE
+        return fallback_message
 
     return advice
 
 
-__all__ = ["generate_advice", "FALLBACK_MESSAGE"]
+__all__ = ["generate_advice", "FALLBACK_MESSAGES", "get_fallback_message"]

@@ -79,7 +79,7 @@ from .const import (
     SERVICE_GENERATE_REPORT,
     VALID_PERIODS,
 )
-from .ai_helper import FALLBACK_MESSAGE, generate_advice
+from .ai_helper import generate_advice, get_fallback_message
 from .pdf import EnergyPDFBuilder, TableConfig, _decorate_category
 
 from .translations import ReportTranslations, get_report_translations
@@ -1612,6 +1612,7 @@ def _build_pdf(
             "start": display_start.date().isoformat(),
             "end": display_end.date().isoformat(),
             "period": period,
+            "language": translations.language,
         }
 
         try:
@@ -1914,7 +1915,7 @@ def _build_pdf(
 
     advice_content = advice_text.strip() if advice_text else ""
     if not advice_content:
-        advice_content = FALLBACK_MESSAGE
+        advice_content = get_fallback_message(translations.language)
 
     builder.add_section_title(translations.advice_section_title)
     builder.add_paragraph(advice_content)

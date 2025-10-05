@@ -34,7 +34,7 @@ Depuis la page **Paramètres → Appareils et services**, ouvrez l'intégration 
 
 - **Répertoire de sortie** : dossier utilisé pour stocker les rapports lorsqu'aucun répertoire n'est fourni au service.
 - **Période par défaut** : granularité (`day`, `week`, `month`) appliquée si l'appel au service ne précise pas de période.
-- **Modèle de nom de fichier** : patron utilisé pour générer automatiquement le nom du PDF lorsqu'aucun nom n'est fourni (variables disponibles : `{start}`, `{end}`, `{period}`).
+- **Modèle de nom de fichier** : patron utilisé pour générer automatiquement le nom du PDF lorsqu'aucun nom n'est fourni (variables disponibles : `{start}`, `{end}`, `{period}`, `{language}`).
 
 Ces options sont immédiatement prises en compte lors du prochain appel au service, sans nécessiter de redémarrage de Home Assistant.
 
