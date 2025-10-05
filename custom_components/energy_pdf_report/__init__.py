@@ -2079,13 +2079,29 @@ def _build_pdf(
             comparison_summary=comparison_conclusion_summary,
         )
 
+        comparison_table.column_widths = builder.compute_column_widths(
+            (0.38, 0.2, 0.2, 0.11, 0.11)
+        )
+
         builder.add_section_title(translations.comparison_section_title)
         builder.add_table(comparison_table)
 
     if conclusion_summary:
         builder.add_section_title(translations.conclusion_title)
 
+        insight_text: str | None = None
+        if comparison_conclusion_summary and comparison is not None:
+            insight_text = _render_comparison_conclusion_insight(
+                translations,
+                conclusion_summary,
+                comparison_conclusion_summary,
+                comparison.label,
+            )
+
         overview_text = _render_conclusion_overview(translations, conclusion_summary)
+        if insight_text:
+            overview_text = f"{overview_text}\n\n{insight_text}"
+
         builder.add_paragraph(overview_text)
 
         formatted_values = conclusion_summary.formatted
@@ -2356,6 +2372,43 @@ def _render_conclusion_overview(
     )
 
 
+def _render_comparison_conclusion_insight(
+    translations: ReportTranslations,
+    primary_summary: ConclusionSummary,
+    comparison_summary: ConclusionSummary,
+    comparison_label: str,
+) -> str:
+    """Construire un texte de synthèse sur l'écart avec la période comparée."""
+
+    energy_unit = (
+        primary_summary.energy_unit or comparison_summary.energy_unit or ""
+    )
+
+    total_delta_value = (
+        primary_summary.total_estimated_consumption
+        - comparison_summary.total_estimated_consumption
+    )
+    import_delta_value = primary_summary.imported - comparison_summary.imported
+    export_delta_value = primary_summary.exported - comparison_summary.exported
+
+    total_delta = _format_signed_with_unit(total_delta_value, energy_unit)
+    import_delta = _format_signed_with_unit(import_delta_value, energy_unit)
+    export_delta = _format_signed_with_unit(export_delta_value, energy_unit)
+
+    total_variation = _format_percentage_delta(
+        primary_summary.total_estimated_consumption,
+        comparison_summary.total_estimated_consumption,
+    )
+
+    return translations.conclusion_comparison_insight.format(
+        label=comparison_label,
+        total_delta=total_delta,
+        total_variation=total_variation,
+        import_delta=import_delta,
+        export_delta=export_delta,
+    )
+
+
 def _compose_conclusion_prompt(
     translations: ReportTranslations, summary: ConclusionSummary | None
 ) -> str:
@@ -2471,6 +2524,32 @@ def _format_with_unit(value: float, unit: str | None) -> str:
 
     formatted = _format_number(value)
     return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _format_signed_number(value: float) -> str:
+    """Formater un nombre en ajoutant explicitement le signe positif."""
+
+    formatted = _format_number(value)
+    if value > 0:
+        return f"+{formatted}"
+    return formatted
+
+
+def _format_signed_with_unit(value: float, unit: str | None) -> str:
+    """Formater un écart numérique avec son unité."""
+
+    formatted = _format_signed_number(value)
+    return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _format_percentage_delta(current: float, baseline: float) -> str:
+    """Formater une variation en pourcentage entre deux valeurs."""
+
+    if abs(baseline) < 1e-9:
+        return "—"
+
+    delta = ((current - baseline) / baseline) * 100
+    return f"{_format_signed_number(delta)} %"
 
 
 __all__ = ["async_setup", "async_setup_entry", "async_unload_entry"]
