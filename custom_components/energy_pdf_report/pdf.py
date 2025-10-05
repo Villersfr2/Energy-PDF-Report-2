@@ -700,6 +700,10 @@ def _aggregate_comparison_values(
         key: None
         for key in (
             "consumption",
+            "consumption_water",
+            "consumption_gas",
+            "battery_charge",
+            "battery_discharge",
             "total_estimated_consumption",
             "untracked_consumption",
             "device_consumption",
@@ -783,8 +787,27 @@ def _classify_metric_category(category: str) -> set[str]:
 
     result: set[str] = set()
 
-    if "consommation" in lowered or "charge" in lowered:
+    battery_related = "batter" in lowered
+    discharge_keywords = ("décharge", "decharge", "discharge", "unload")
+    charge_keywords = ("charge", "charging", "load")
+
+    if battery_related and any(keyword in lowered for keyword in discharge_keywords):
+        result.add("battery_discharge")
+    if battery_related and any(keyword in lowered for keyword in charge_keywords):
+        if not any(keyword in lowered for keyword in discharge_keywords):
+            result.add("battery_charge")
+
+    if "consommation" in lowered or "consumption" in lowered:
         result.add("consumption")
+
+    water_keywords = ("eau", "water", "wasser", "acqua")
+    if any(keyword in lowered for keyword in water_keywords):
+        result.add("consumption_water")
+
+    gas_keywords = ("gaz", "gas", "gás", "gaso", "fioul", "mazout", "fuel", "oil")
+    if any(keyword in lowered for keyword in gas_keywords):
+        result.add("consumption_gas")
+
     if "production" in lowered:
         result.add("production")
     if "import" in lowered:
@@ -877,7 +900,6 @@ def _format_signed(value: float) -> str:
 
 
 _COMPARISON_ROWS: Tuple[Tuple[str, str, str | None], ...] = (
-    ("consumption", "comparison_consumption_label", None),
     (
         "total_estimated_consumption",
         "comparison_total_estimated_consumption_label",
@@ -888,10 +910,14 @@ _COMPARISON_ROWS: Tuple[Tuple[str, str, str | None], ...] = (
     ("production", "comparison_production_label", None),
     ("import", "comparison_import_label", None),
     ("export", "comparison_export_label", None),
+    ("battery_charge", "comparison_battery_charge_label", None),
+    ("battery_discharge", "comparison_battery_discharge_label", None),
     ("self_consumption", "comparison_self_consumption_label", None),
     ("expenses", "comparison_expense_label", None),
     ("income", "comparison_income_label", None),
     ("co2", "comparison_co2_label", "kgCO₂e"),
+    ("consumption_water", "comparison_water_consumption_label", None),
+    ("consumption_gas", "comparison_gas_consumption_label", None),
 )
 
 
