@@ -1612,6 +1612,7 @@ def _build_pdf(
             "start": display_start.date().isoformat(),
             "end": display_end.date().isoformat(),
             "period": period,
+            "language": translations.language,
         }
 
         try:

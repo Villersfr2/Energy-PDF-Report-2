@@ -11,7 +11,7 @@ DEFAULT_REPORT_TYPE = "week"
 
 VALID_REPORT_TYPES = VALID_PERIODS
 DEFAULT_OUTPUT_DIR = "www/energy_reports"
-DEFAULT_FILENAME_PATTERN = "energy_report_{start}_{end}.pdf"
+DEFAULT_FILENAME_PATTERN = "energy_report_{language}_{start}_{end}.pdf"
 DEFAULT_LANGUAGE = "fr"
 SUPPORTED_LANGUAGES: tuple[str, ...] = ("fr", "nl", "en")
 
