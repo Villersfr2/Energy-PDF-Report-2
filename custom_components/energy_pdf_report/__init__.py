@@ -2146,6 +2146,16 @@ def _build_pdf(
 
         builder.add_paragraph("\n\n".join(paragraphs))
 
+        if comparison_conclusion_summary and comparison is not None:
+            insight_text = _render_comparison_conclusion_insight(
+                translations,
+                conclusion_summary,
+                comparison_conclusion_summary,
+                comparison.label,
+            )
+            if insight_text:
+                builder.add_paragraph(insight_text)
+
         formatted_values = conclusion_summary.formatted
         table_rows: list[tuple[str, str]] = [
             (translations.conclusion_row_direct_label, formatted_values["direct"]),

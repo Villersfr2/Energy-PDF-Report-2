@@ -927,6 +927,8 @@ _COMPARISON_ROWS: Tuple[Tuple[str, str, str | None], ...] = (
     ("expenses", "comparison_expense_label", None),
     ("income", "comparison_income_label", None),
     ("co2", "comparison_co2_label", "kgCO₂e"),
+    ("consumption_water", "comparison_water_consumption_label", None),
+    ("consumption_gas", "comparison_gas_consumption_label", None),
 )
 
 
