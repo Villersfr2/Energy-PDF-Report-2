@@ -762,6 +762,9 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 comparison_summary_for_advice,
                 comparison_context.label,
             )
+            comparison_insight_text = _deduplicate_insight_text(
+                comparison_insight_text
+            )
 
     conclusion_prompt_text = _compose_conclusion_prompt(
         translations,
@@ -2125,36 +2128,19 @@ def _build_pdf(
         paragraphs: list[str] = [overview_text]
 
         if insight_text:
-            normalized_insight = insight_text.strip()
-            if normalized_insight:
-                normalized_existing = {
-                    paragraph.strip()
-                    for paragraph in paragraphs
-                    if paragraph.strip()
-                }
-                if normalized_insight not in normalized_existing:
-                    insight_lines = insight_text.splitlines()
-                    deduplicated_lines: list[str] = []
-                    seen_lines: set[str] = set()
-                    for line in insight_lines:
-                        if line in seen_lines:
-                            continue
-                        deduplicated_lines.append(line)
-                        seen_lines.add(line)
-
-                    paragraphs.append("\n".join(deduplicated_lines))
+            insight_text = _deduplicate_insight_text(insight_text)
+            if insight_text:
+                normalized_insight = insight_text.strip()
+                if normalized_insight:
+                    normalized_existing = {
+                        paragraph.strip()
+                        for paragraph in paragraphs
+                        if paragraph.strip()
+                    }
+                    if normalized_insight not in normalized_existing:
+                        paragraphs.append(insight_text)
 
         builder.add_paragraph("\n\n".join(paragraphs))
-
-        if comparison_conclusion_summary and comparison is not None:
-            insight_text = _render_comparison_conclusion_insight(
-                translations,
-                conclusion_summary,
-                comparison_conclusion_summary,
-                comparison.label,
-            )
-            if insight_text:
-                builder.add_paragraph(insight_text)
 
         formatted_values = conclusion_summary.formatted
         table_rows: list[tuple[str, str]] = [
@@ -2529,12 +2515,49 @@ def _render_comparison_conclusion_insight(
     )
 
 
+def _deduplicate_insight_text(insight: str | None) -> str | None:
+    """Supprimer les doublons de lignes et normaliser un paragraphe d'analyse."""
+
+    if not insight:
+        return None
+
+    insight_lines = insight.splitlines()
+    deduplicated_lines: list[str] = []
+    seen_lines: set[str] = set()
+
+    for line in insight_lines:
+        stripped_line = line.strip()
+        if not stripped_line:
+            if deduplicated_lines and deduplicated_lines[-1] != "":
+                deduplicated_lines.append("")
+            continue
+
+        if stripped_line in seen_lines:
+            continue
+
+        seen_lines.add(stripped_line)
+        deduplicated_lines.append(stripped_line)
+
+    cleaned_lines: list[str] = []
+    for line in deduplicated_lines:
+        if line:
+            cleaned_lines.append(line)
+        elif cleaned_lines and cleaned_lines[-1] != "":
+            cleaned_lines.append("")
+
+    cleaned_insight = "\n".join(cleaned_lines).strip()
+
+    return cleaned_insight or None
+
+
 def _compose_conclusion_prompt(
     translations: ReportTranslations,
     summary: ConclusionSummary | None,
     comparison_insight: str | None = None,
 ) -> str:
     """Assembler un texte descriptif passé à l’IA pour générer un conseil."""
+
+    comparison_insight = _deduplicate_insight_text(comparison_insight)
 
     if summary is None:
         if comparison_insight:
