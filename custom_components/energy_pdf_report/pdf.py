@@ -797,6 +797,7 @@ def _classify_metric_category(category: str) -> set[str]:
         if not any(keyword in lowered for keyword in discharge_keywords):
             result.add("battery_charge")
 
+
     is_consumption = "consommation" in lowered or "consumption" in lowered
     if is_consumption:
         result.add("consumption")
@@ -808,6 +809,7 @@ def _classify_metric_category(category: str) -> set[str]:
         gas_keywords = ("gaz", "gas", "gás", "gaso", "fioul", "mazout", "fuel", "oil")
         if any(keyword in lowered for keyword in gas_keywords):
             result.add("consumption_gas")
+
 
     if "production" in lowered:
         result.add("production")
