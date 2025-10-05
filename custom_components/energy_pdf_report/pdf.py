@@ -797,7 +797,6 @@ def _classify_metric_category(category: str) -> set[str]:
         if not any(keyword in lowered for keyword in discharge_keywords):
             result.add("battery_charge")
 
-
     is_consumption = "consommation" in lowered or "consumption" in lowered
     if is_consumption:
         result.add("consumption")
@@ -809,7 +808,6 @@ def _classify_metric_category(category: str) -> set[str]:
         gas_keywords = ("gaz", "gas", "gás", "gaso", "fioul", "mazout", "fuel", "oil")
         if any(keyword in lowered for keyword in gas_keywords):
             result.add("consumption_gas")
-
 
     if "production" in lowered:
         result.add("production")
@@ -916,6 +914,8 @@ _COMPARISON_ROWS: Tuple[Tuple[str, str, str | None], ...] = (
     ("battery_charge", "comparison_battery_charge_label", None),
     ("battery_discharge", "comparison_battery_discharge_label", None),
     ("self_consumption", "comparison_self_consumption_label", None),
+    ("consumption_water", "comparison_water_consumption_label", None),
+    ("consumption_gas", "comparison_gas_consumption_label", None),
     ("expenses", "comparison_expense_label", None),
     ("income", "comparison_income_label", None),
     ("co2", "comparison_co2_label", "kgCO₂e"),

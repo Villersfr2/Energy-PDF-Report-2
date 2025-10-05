@@ -2080,9 +2080,7 @@ def _build_pdf(
         )
 
         comparison_table.column_widths = builder.compute_column_widths(
-
             (0.38, 0.2, 0.2, 0.11, 0.11)
-
         )
 
         builder.add_section_title(translations.comparison_section_title)
@@ -2101,7 +2099,7 @@ def _build_pdf(
             )
 
         overview_text = _render_conclusion_overview(translations, conclusion_summary)
-        if insight_text:
+        if insight_text and insight_text not in overview_text:
             overview_text = f"{overview_text}\n\n{insight_text}"
 
         builder.add_paragraph(overview_text)
@@ -2412,12 +2410,61 @@ def _render_comparison_conclusion_insight(
         comparison_summary.total_estimated_consumption,
     )
 
+    primary_self_consumption = (primary_summary.direct or 0.0) + (
+        primary_summary.indirect or 0.0
+    )
+    comparison_self_consumption = (comparison_summary.direct or 0.0) + (
+        comparison_summary.indirect or 0.0
+    )
+    self_consumption_delta_value = (
+        primary_self_consumption - comparison_self_consumption
+    )
+    self_consumption_delta = _format_signed_with_unit(
+        self_consumption_delta_value,
+        energy_unit,
+    )
+    self_consumption_variation = _format_percentage_delta(
+        primary_self_consumption,
+        comparison_self_consumption,
+    )
+
+    consumption_delta_value = (
+        primary_summary.consumption - comparison_summary.consumption
+    )
+    consumption_delta = _format_signed_with_unit(
+        consumption_delta_value,
+        energy_unit,
+    )
+    consumption_variation = _format_percentage_delta(
+        primary_summary.consumption,
+        comparison_summary.consumption,
+    )
+
+    untracked_delta_value = (
+        primary_summary.untracked_consumption
+        - comparison_summary.untracked_consumption
+    )
+    untracked_delta = _format_signed_with_unit(
+        untracked_delta_value,
+        energy_unit,
+    )
+    untracked_variation = _format_percentage_delta(
+        primary_summary.untracked_consumption,
+        comparison_summary.untracked_consumption,
+    )
+
     return translations.conclusion_comparison_insight.format(
         label=comparison_label,
         total_delta=total_delta,
         total_variation=total_variation,
         import_delta=import_delta,
         export_delta=export_delta,
+        self_consumption_delta=self_consumption_delta,
+        self_consumption_variation=self_consumption_variation,
+        consumption_delta=consumption_delta,
+        consumption_variation=consumption_variation,
+        untracked_delta=untracked_delta,
+        untracked_variation=untracked_variation,
     )
 
 
