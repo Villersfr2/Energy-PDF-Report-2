@@ -648,7 +648,11 @@ def build_comparison_section(
     )
 
     rows: list[tuple[str, str, str, str, str]] = []
+    seen_keys: set[str] = set()
     for key, label_attr, fallback_unit in _COMPARISON_ROWS:
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         label = getattr(translations, label_attr)
         unit = (
             primary_units.get(key)

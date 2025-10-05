@@ -6,6 +6,8 @@ import calendar
 
 import inspect
 import logging
+import secrets
+import string
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, tzinfo
@@ -746,8 +748,25 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         primary_context.totals,
         primary_context.metadata,
     )
+    comparison_insight_for_prompt: str | None = None
+    if comparison_context and conclusion_summary_for_advice is not None:
+        comparison_summary_for_advice = _prepare_conclusion_summary(
+            metrics,
+            comparison_context.totals,
+            comparison_context.metadata,
+        )
+        if comparison_summary_for_advice is not None:
+            comparison_insight_for_prompt = _render_comparison_conclusion_insight(
+                translations,
+                conclusion_summary_for_advice,
+                comparison_summary_for_advice,
+                comparison_context.label,
+            )
+
     conclusion_prompt_text = _compose_conclusion_prompt(
-        translations, conclusion_summary_for_advice
+        translations,
+        conclusion_summary_for_advice,
+        comparison_insight_for_prompt,
     )
 
     raw_api_key = options.get(CONF_OPENAI_API_KEY)
@@ -1844,6 +1863,8 @@ def _build_pdf(
     if not filename.lower().endswith(".pdf"):
         filename = f"{filename}.pdf"
 
+    filename = _append_random_suffix(filename)
+
     file_path = output_dir / filename
 
     period_label = primary.label
@@ -2187,6 +2208,25 @@ def _build_pdf(
     return str(file_path)
 
 
+def _append_random_suffix(filename: str, *, length: int = 4) -> str:
+    """Ajouter un suffixe aléatoire pour éviter les collisions de nom."""
+
+    alphabet = string.ascii_uppercase + string.digits
+    random_part = "".join(secrets.choice(alphabet) for _ in range(length))
+
+    path = Path(filename)
+    suffix = ".pdf"
+    if path.suffix:
+        suffix = ".pdf" if path.suffix.lower() == ".pdf" else path.suffix
+
+    new_name = f"{path.stem}_{random_part}{suffix}"
+
+    if path.parent == Path("."):
+        return new_name
+
+    return str(path.with_name(new_name))
+
+
 def _prepare_summary_rows(
     metrics: Iterable[MetricDefinition],
     totals: dict[str, float],
@@ -2469,11 +2509,15 @@ def _render_comparison_conclusion_insight(
 
 
 def _compose_conclusion_prompt(
-    translations: ReportTranslations, summary: ConclusionSummary | None
+    translations: ReportTranslations,
+    summary: ConclusionSummary | None,
+    comparison_insight: str | None = None,
 ) -> str:
     """Assembler un texte descriptif passé à l’IA pour générer un conseil."""
 
     if summary is None:
+        if comparison_insight:
+            return f"{translations.conclusion_hint}\n\n{comparison_insight}"
         return translations.conclusion_hint
 
     overview = _render_conclusion_overview(translations, summary)
@@ -2519,9 +2563,14 @@ def _compose_conclusion_prompt(
 
     table_lines = "\n".join(f"{label} : {value}" for label, value in rows)
 
-    return (
+    prompt = (
         f"{overview}\n\n{translations.conclusion_table_title} :\n{table_lines}"
     )
+
+    if comparison_insight:
+        prompt = f"{prompt}\n\n{comparison_insight}"
+
+    return prompt
 
 
 def _extract_unit(metadata: tuple[int, StatisticMetaData] | None) -> str:
