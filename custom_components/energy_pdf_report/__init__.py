@@ -6,6 +6,8 @@ import calendar
 
 import inspect
 import logging
+import secrets
+import string
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, tzinfo
@@ -746,8 +748,25 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         primary_context.totals,
         primary_context.metadata,
     )
+    comparison_insight_for_prompt: str | None = None
+    if comparison_context and conclusion_summary_for_advice is not None:
+        comparison_summary_for_advice = _prepare_conclusion_summary(
+            metrics,
+            comparison_context.totals,
+            comparison_context.metadata,
+        )
+        if comparison_summary_for_advice is not None:
+            comparison_insight_for_prompt = _render_comparison_conclusion_insight(
+                translations,
+                conclusion_summary_for_advice,
+                comparison_summary_for_advice,
+                comparison_context.label,
+            )
+
     conclusion_prompt_text = _compose_conclusion_prompt(
-        translations, conclusion_summary_for_advice
+        translations,
+        conclusion_summary_for_advice,
+        comparison_insight_for_prompt,
     )
 
     raw_api_key = options.get(CONF_OPENAI_API_KEY)
@@ -1844,6 +1863,8 @@ def _build_pdf(
     if not filename.lower().endswith(".pdf"):
         filename = f"{filename}.pdf"
 
+    filename = _append_random_suffix(filename)
+
     file_path = output_dir / filename
 
     period_label = primary.label
@@ -2079,13 +2100,29 @@ def _build_pdf(
             comparison_summary=comparison_conclusion_summary,
         )
 
+        comparison_table.column_widths = builder.compute_column_widths(
+            (0.38, 0.2, 0.2, 0.11, 0.11)
+        )
+
         builder.add_section_title(translations.comparison_section_title)
         builder.add_table(comparison_table)
 
     if conclusion_summary:
         builder.add_section_title(translations.conclusion_title)
 
+        insight_text: str | None = None
+        if comparison_conclusion_summary and comparison is not None:
+            insight_text = _render_comparison_conclusion_insight(
+                translations,
+                conclusion_summary,
+                comparison_conclusion_summary,
+                comparison.label,
+            )
+
         overview_text = _render_conclusion_overview(translations, conclusion_summary)
+        if insight_text and insight_text not in overview_text:
+            overview_text = f"{overview_text}\n\n{insight_text}"
+
         builder.add_paragraph(overview_text)
 
         formatted_values = conclusion_summary.formatted
@@ -2159,6 +2196,25 @@ def _build_pdf(
     builder.output(str(file_path))
 
     return str(file_path)
+
+
+def _append_random_suffix(filename: str, *, length: int = 4) -> str:
+    """Ajouter un suffixe aléatoire pour éviter les collisions de nom."""
+
+    alphabet = string.ascii_uppercase + string.digits
+    random_part = "".join(secrets.choice(alphabet) for _ in range(length))
+
+    path = Path(filename)
+    suffix = ".pdf"
+    if path.suffix:
+        suffix = ".pdf" if path.suffix.lower() == ".pdf" else path.suffix
+
+    new_name = f"{path.stem}_{random_part}{suffix}"
+
+    if path.parent == Path("."):
+        return new_name
+
+    return str(path.with_name(new_name))
 
 
 def _prepare_summary_rows(
@@ -2356,12 +2412,102 @@ def _render_conclusion_overview(
     )
 
 
+def _render_comparison_conclusion_insight(
+    translations: ReportTranslations,
+    primary_summary: ConclusionSummary,
+    comparison_summary: ConclusionSummary,
+    comparison_label: str,
+) -> str:
+    """Construire un texte de synthèse sur l'écart avec la période comparée."""
+
+    energy_unit = (
+        primary_summary.energy_unit or comparison_summary.energy_unit or ""
+    )
+
+    total_delta_value = (
+        primary_summary.total_estimated_consumption
+        - comparison_summary.total_estimated_consumption
+    )
+    import_delta_value = primary_summary.imported - comparison_summary.imported
+    export_delta_value = primary_summary.exported - comparison_summary.exported
+
+    total_delta = _format_signed_with_unit(total_delta_value, energy_unit)
+    import_delta = _format_signed_with_unit(import_delta_value, energy_unit)
+    export_delta = _format_signed_with_unit(export_delta_value, energy_unit)
+
+    total_variation = _format_percentage_delta(
+        primary_summary.total_estimated_consumption,
+        comparison_summary.total_estimated_consumption,
+    )
+
+    primary_self_consumption = (primary_summary.direct or 0.0) + (
+        primary_summary.indirect or 0.0
+    )
+    comparison_self_consumption = (comparison_summary.direct or 0.0) + (
+        comparison_summary.indirect or 0.0
+    )
+    self_consumption_delta_value = (
+        primary_self_consumption - comparison_self_consumption
+    )
+    self_consumption_delta = _format_signed_with_unit(
+        self_consumption_delta_value,
+        energy_unit,
+    )
+    self_consumption_variation = _format_percentage_delta(
+        primary_self_consumption,
+        comparison_self_consumption,
+    )
+
+    consumption_delta_value = (
+        primary_summary.consumption - comparison_summary.consumption
+    )
+    consumption_delta = _format_signed_with_unit(
+        consumption_delta_value,
+        energy_unit,
+    )
+    consumption_variation = _format_percentage_delta(
+        primary_summary.consumption,
+        comparison_summary.consumption,
+    )
+
+    untracked_delta_value = (
+        primary_summary.untracked_consumption
+        - comparison_summary.untracked_consumption
+    )
+    untracked_delta = _format_signed_with_unit(
+        untracked_delta_value,
+        energy_unit,
+    )
+    untracked_variation = _format_percentage_delta(
+        primary_summary.untracked_consumption,
+        comparison_summary.untracked_consumption,
+    )
+
+    return translations.conclusion_comparison_insight.format(
+        label=comparison_label,
+        total_delta=total_delta,
+        total_variation=total_variation,
+        import_delta=import_delta,
+        export_delta=export_delta,
+        self_consumption_delta=self_consumption_delta,
+        self_consumption_variation=self_consumption_variation,
+        consumption_delta=consumption_delta,
+        consumption_variation=consumption_variation,
+        untracked_delta=untracked_delta,
+        untracked_variation=untracked_variation,
+    )
+
+
 def _compose_conclusion_prompt(
-    translations: ReportTranslations, summary: ConclusionSummary | None
+    translations: ReportTranslations,
+    summary: ConclusionSummary | None,
+    comparison_insight: str | None = None,
 ) -> str:
     """Assembler un texte descriptif passé à l’IA pour générer un conseil."""
 
     if summary is None:
+        if comparison_insight:
+            return f"{translations.conclusion_hint}\n\n{comparison_insight}"
         return translations.conclusion_hint
 
     overview = _render_conclusion_overview(translations, summary)
@@ -2407,9 +2553,14 @@ def _compose_conclusion_prompt(
 
     table_lines = "\n".join(f"{label} : {value}" for label, value in rows)
 
-    return (
+    prompt = (
         f"{overview}\n\n{translations.conclusion_table_title} :\n{table_lines}"
     )
+
+    if comparison_insight:
+        prompt = f"{prompt}\n\n{comparison_insight}"
+
+    return prompt
 
 
 def _extract_unit(metadata: tuple[int, StatisticMetaData] | None) -> str:
@@ -2471,6 +2622,32 @@ def _format_with_unit(value: float, unit: str | None) -> str:
 
     formatted = _format_number(value)
     return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _format_signed_number(value: float) -> str:
+    """Formater un nombre en ajoutant explicitement le signe positif."""
+
+    formatted = _format_number(value)
+    if value > 0:
+        return f"+{formatted}"
+    return formatted
+
+
+def _format_signed_with_unit(value: float, unit: str | None) -> str:
+    """Formater un écart numérique avec son unité."""
+
+    formatted = _format_signed_number(value)
+    return f"{formatted} {unit}".strip() if unit else formatted
+
+
+def _format_percentage_delta(current: float, baseline: float) -> str:
+    """Formater une variation en pourcentage entre deux valeurs."""
+
+    if abs(baseline) < 1e-9:
+        return "—"
+
+    delta = ((current - baseline) / baseline) * 100
+    return f"{_format_signed_number(delta)} %"
 
 
 __all__ = ["async_setup", "async_setup_entry", "async_unload_entry"]
