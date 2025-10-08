@@ -177,7 +177,7 @@ Bring the packaged helpers into your Home Assistant instance in two quick steps.
   <figcaption>Exemple de dashboard Energy PDF Report avec package et vue Lovelace fournis.</figcaption>
 </figure>
 
-> 📸 **Astuce** : l'image d'aperçu se trouve dans le dépôt GitHub (`assets/dashboard-preview.png`). Vous pouvez également remplacer la balise `<img>` par votre propre capture du tableau de bord si vous préférez.
+> 📸 **Astuce** : l'image d'aperçu se trouve dans le dépôt GitHub (`/custom_components/energy_pdf_report/assets/dashboard-preview.png`). Vous pouvez également remplacer la balise `<img>` par votre propre capture du tableau de bord si vous préférez.
 
 ## Troubleshooting
 
@@ -194,11 +194,3 @@ For questions, feature requests, or bug reports, please open an issue on the rep
   <figcaption>Exemple de dashboard Energy PDF Report avec package et vue Lovelace fournis.</figcaption>
 </figure>
 
-> 📸 **Astuce** : l'image d'aperçu se trouve dans le dépôt GitHub (`assets/dashboard-preview.png`). Vous pouvez également remplacer la balise `<img>` par votre propre capture du tableau de bord si vous préférez.
-## Troubleshooting
-
-- Ensure the recorder includes statistics for every entity referenced by the integration; missing statistics will prevent the related rows from appearing.
-- If the report generation service fails, check **Settings → System → Logs** for detailed error messages.
-- When the AI advisor is enabled, verify that your OpenAI API key is valid and that outbound HTTPS requests are permitted from your Home Assistant host.
-
-For questions, feature requests, or bug reports, please open an issue on the repository.
