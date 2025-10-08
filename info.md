@@ -106,49 +106,8 @@ action:
 mode: single
 ```
 
-## Ready-to-use dashboard helpers
 
-Bring the packaged helpers into your Home Assistant instance in two quick steps.
 
-### 1. Install the helper package
-
-1. Copy `packages/energy_pdf_report.yaml` into your Home Assistant configuration.
-2. If you do not already load packages, add the following snippet to `configuration.yaml` and restart:
-
-   ```yaml
-   homeassistant:
-     packages: !include_dir_named packages
-   ```
-
-3. Reload the helpers from **Settings → Devices & Services → Helpers** (or restart) so the input selects, toggles, and script become available.
-
-### 2. Import the Lovelace view
-
-1. Copy `dashboards/energy_pdf_report.yaml` and add it as a manual dashboard (or merge the cards into an existing view).
-2. Update the `image:` path in the picture card if you store the screenshot elsewhere. Download the preview image from `## Automating report generation
-
-Schedule recurring reports using standard Home Assistant automations. The example below generates a monthly English report on the first day of each month and sends a link through a notification:
-
-```yaml
-alias: Monthly energy PDF
-trigger:
-  - platform: time
-    at: "08:00:00"
-condition:
-  - condition: template
-    value_template: "{{ now().day == 1 }}"
-action:
-  - service: energy_pdf_report.generate
-    data:
-      period: month
-      language: en
-  - delay: "00:01:00"  # wait for the PDF to be written
-  - service: notify.mobile_app_phone
-    data:
-      title: "Monthly energy report"
-      message: "Your latest energy PDF is available in /local/energy_reports/."
-mode: single
-```
 
 ## Ready-to-use dashboard helpers
 
