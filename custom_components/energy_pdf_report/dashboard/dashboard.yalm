@@ -1,0 +1,93 @@
+type: sections
+max_columns: 4
+title: Reporting
+path: reporting
+sections:
+  - type: grid
+    cards:
+      - type: vertical-stack
+        cards:
+          - type: entities
+            title: 📝 Rapport EcoPilot PDF
+            entities:
+              - entity: input_select.pdf_report_period
+                name: Période
+              - entity: input_select.pdf_report_language
+                name: Langue
+              - entity: input_boolean.pdf_report_co2
+                name: Inclure CO₂
+              - entity: input_boolean.pdf_report_price
+                name: Inclure les prix
+              - entity: input_boolean.pdf_report_custom_range
+                name: Période personnalisée
+              - entity: input_boolean.pdf_report_compare
+                name: Activer la comparaison
+          - type: conditional
+            conditions:
+              - entity: input_boolean.pdf_report_custom_range
+                state: "on"
+            card:
+              type: entities
+              title: 📅 Période de base personnalisée
+              entities:
+                - entity: input_datetime.pdf_report_start
+                  name: Date début
+                - entity: input_datetime.pdf_report_end
+                  name: Date fin
+          - type: conditional
+            conditions:
+              - entity: input_boolean.pdf_report_compare
+                state: "on"
+            card:
+              type: entities
+              title: 🔁 Période de comparaison
+              entities:
+                - entity: input_datetime.pdf_report_compare_start
+                  name: Date début
+                - entity: input_datetime.pdf_report_compare_end
+                  name: Date fin
+          - type: button
+            name: Générer le rapport PDF
+            icon: mdi:file-pdf-box
+            tap_action:
+              action: call-service
+              service: script.pdf_report_generate
+  - type: grid
+    cards:
+      - type: markdown
+        title: État génération PDF
+        content: >-
+          {% if is_state('input_boolean.pdf_report_generating', 'on') %} ⏳
+          **Génération du PDF en cours...** {% else %} ✅ _Prêt à générer un
+          nouveau rapport._ {% endif %}
+      - type: vertical-stack
+        cards:
+          - type: markdown
+            title: 📅 Dernier rapport généré
+            content: >
+              {% set last = states('input_datetime.pdf_report_last_generated')
+              %} {% if last not in ['unknown', '', none] %}
+                🕓 **Généré le :** {{ as_timestamp(last) | timestamp_custom('%d/%m/%Y à %H:%M') }}
+              {% else %}
+                _Aucun rapport généré pour l’instant._
+              {% endif %}
+          - type: markdown
+            title: 📄 Contenu du dernier rapport PDF
+            content: >
+              {% set eid_ei = 'enhanced_input.pdf_report_last' %} {% set has_ei
+              = states(eid_ei) not in ['unknown', '', none] and
+              state_attr(eid_ei, 'long_text') not in [none, ''] %}
+
+              {% if has_ei %}
+                {% set title = states(eid_ei) %}
+                {% set msg = state_attr(eid_ei, 'long_text') %}
+              {% else %}
+                {% set title = states('input_text.last_pdf_report_title') %}
+                {% set msg = states('input_text.last_pdf_report_message') %}
+              {% endif %}
+
+              {% if msg not in [none, '', 'unknown'] %} ### {{ title }} {{ msg
+              }} {% else %} _Aucune notification de rapport n’a encore été
+              enregistrée._ {% endif %}
+icon: mdi:file-pdf-box
+cards: []

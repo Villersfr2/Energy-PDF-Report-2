@@ -1,0 +1,185 @@
+# ===========================================
+# 📦 EcoPilot PDF Report – UI helpers
+# ===========================================
+
+input_select:
+  pdf_report_period:
+    name: Période du rapport
+    options: [day, week, month]
+    initial: day
+    icon: mdi:calendar-range
+
+  pdf_report_language:
+    name: Langue du rapport
+    options: [fr, en, nl]
+    initial: fr
+    icon: mdi:translate
+
+input_boolean:
+  # Options de contenu
+  pdf_report_co2:
+    name: Inclure CO₂
+    initial: true
+    icon: mdi:molecule-co2
+  pdf_report_price:
+    name: Inclure les prix
+    initial: true
+    icon: mdi:cash
+
+  # Période de base personnalisée (dates)
+  pdf_report_custom_range:
+    name: Utiliser une période personnalisée
+    initial: true
+    icon: mdi:calendar-edit
+
+  # Comparaison
+  pdf_report_compare:
+    name: Activer la comparaison
+    initial: false
+    icon: mdi:compare
+    
+
+  pdf_report_generating:
+    name: Génération en cours
+    initial: false
+    icon: mdi:progress-clock
+
+input_text:
+  last_pdf_report_title:
+    name: Titre du dernier rapport PDF
+    max: 255
+
+  last_pdf_report_message:
+    name: Message du dernier rapport PDF
+    max: 255
+
+
+input_datetime:
+  # Période de base
+  pdf_report_start:
+    name: Date début (période de base)
+    has_date: true
+    has_time: false
+    icon: mdi:calendar-start
+  pdf_report_end:
+    name: Date fin (période de base)
+    has_date: true
+    has_time: false
+    icon: mdi:calendar-end
+
+  # Période de comparaison
+  pdf_report_compare_start:
+    name: Date début comparaison
+    has_date: true
+    has_time: false
+    icon: mdi:calendar-start
+  pdf_report_compare_end:
+    name: Date fin comparaison
+    has_date: true
+    has_time: false
+    icon: mdi:calendar-end
+  pdf_report_last_generated:
+    name: Dernier rapport généré
+    has_date: true
+    has_time: true
+    
+
+# -------------------------------------------
+# Script (utilisé par la carte) pour templater
+# -------------------------------------------
+script:
+  pdf_report_generate:
+    alias: Générer le rapport EcoPilot PDF
+    mode: single
+    sequence:
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.pdf_report_generating
+
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.pdf_report_compare
+                state: 'on'
+            sequence:
+              - service: energy_pdf_report.generate
+                data:
+                  period: "{{ states('input_select.pdf_report_period') }}"
+                  language: "{{ states('input_select.pdf_report_language') }}"
+                  co2_enabled: "{{ is_state('input_boolean.pdf_report_co2','on') }}"
+                  price_enabled: "{{ is_state('input_boolean.pdf_report_price','on') }}"
+                  start_date: >
+                    {% if is_state('input_boolean.pdf_report_custom_range','on') %}
+                      {{ states('input_datetime.pdf_report_start') }}
+                    {% else %}
+                      {{ '' }}
+                    {% endif %}
+                  end_date: >
+                    {% if is_state('input_boolean.pdf_report_custom_range','on') %}
+                      {{ states('input_datetime.pdf_report_end') }}
+                    {% else %}
+                      {{ '' }}
+                    {% endif %}
+                  compare: true
+                  compare_start_date: "{{ states('input_datetime.pdf_report_compare_start') }}"
+                  compare_end_date: "{{ states('input_datetime.pdf_report_compare_end') }}"
+        default:
+          - service: energy_pdf_report.generate
+            data:
+              period: "{{ states('input_select.pdf_report_period') }}"
+              language: "{{ states('input_select.pdf_report_language') }}"
+              co2_enabled: "{{ is_state('input_boolean.pdf_report_co2','on') }}"
+              price_enabled: "{{ is_state('input_boolean.pdf_report_price','on') }}"
+              start_date: >
+                {% if is_state('input_boolean.pdf_report_custom_range','on') %}
+                  {{ states('input_datetime.pdf_report_start') }}
+                {% else %}
+                  {{ '' }}
+                {% endif %}
+              end_date: >
+                {% if is_state('input_boolean.pdf_report_custom_range','on') %}
+                  {{ states('input_datetime.pdf_report_end') }}
+                {% else %}
+                  {{ '' }}
+                {% endif %}
+              compare: false
+
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.pdf_report_last_generated
+        data:
+          datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+
+automation:
+  - id: stop_pdf_generation_indicator
+    alias: ⏹️ Arrêter l'indicateur de génération PDF quand la notification arrive
+    description: Éteint le booléen de génération dès que le rapport PDF est prêt
+    mode: single
+    trigger:
+      - platform: persistent_notification
+        update_type:
+          - added
+          - updated
+        notification_id: energy_pdf_report_last_report
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.pdf_report_generating
+
+# ⚡ Automation : capture la notification PDF et stocke le contenu
+
+  - alias: 📄 Notification - Rapport PDF généré
+    description: Envoie une notification à la carte Markdown dès qu'un rapport PDF est prêt
+    mode: single
+    trigger:
+      - platform: persistent_notification
+        update_type:
+          - added
+          - updated
+        notification_id: energy_pdf_report_last_report
+    action:
+      - service: enhanced_input.create_input_text
+        data:
+          name: pdf_report_last
+          title: "{{ trigger.notification.title | default('Rapport énergie') }}"
+          text: "{{ trigger.notification.message | default('') }}"
