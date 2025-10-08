@@ -830,7 +830,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
     if download_url:
         message_lines.append(
-            translations.notification_line_download.format(url=download_url)
+            f'<a href="{download_url}" target="_blank">'
+            f"{translations.notification_line_download}</a>"
         )
 
     message_lines.append(translations.notification_line_file.format(path=pdf_path))
