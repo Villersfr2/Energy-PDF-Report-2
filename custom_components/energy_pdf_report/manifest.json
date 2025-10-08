@@ -1,14 +1,13 @@
 {
   "domain": "energy_pdf_report",
   "name": "Energy PDF Report",
-  "version": "2.1.2",
+  "codeowners": ["@Villersfr2"],
+  "config_flow": true,
+  "dependencies": ["recorder", "energy"],
   "documentation": "https://github.com/Villersfr2/Energy-PDF-Report-2",
+  "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Villersfr2/Energy-PDF-Report-2/issues",
   "requirements": ["fpdf2>=2.8.4"],
-  
-  "dependencies": ["recorder", "energy"],
-  "codeowners": ["@Villersfr2"],
-  "iot_class": "local_polling",
-  "config_flow": true
+  "version": "2.1.3"
 
 }
