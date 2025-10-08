@@ -107,55 +107,31 @@ mode: single
 ```
 
 @@ -84,32 +84,61 @@ The PDF is saved inside the configured `output_dir`. If you keep the default pat
-## Automating report generation
-## Automating report generation
 
+## Automating report generation
 
 Schedule recurring reports using standard Home Assistant automations. The example below generates a monthly English report on the first day of each month and sends a link through a notification:
-Schedule recurring reports using standard Home Assistant automations. The example below generates a monthly English report on the first day of each month and sends a link through a notification:
-
 
 ```yaml
-```yaml
-alias: Monthly energy PDF
 alias: Monthly energy PDF
 trigger:
-trigger:
-  - platform: time
   - platform: time
     at: "08:00:00"
-    at: "08:00:00"
-condition:
 condition:
   - condition: template
-  - condition: template
-    value_template: "{{ now().day == 1 }}"
     value_template: "{{ now().day == 1 }}"
 action:
-action:
-  - service: energy_pdf_report.generate
   - service: energy_pdf_report.generate
     data:
-    data:
-      period: month
       period: month
       language: en
-      language: en
-  - delay: "00:01:00"  # wait for the PDF to be written
   - delay: "00:01:00"  # wait for the PDF to be written
   - service: notify.mobile_app_phone
-  - service: notify.mobile_app_phone
-    data:
     data:
       title: "Monthly energy report"
-      title: "Monthly energy report"
-      message: "Your latest energy PDF is available in /local/energy_reports/."
       message: "Your latest energy PDF is available in /local/energy_reports/."
 mode: single
-mode: single
 ```
-```
-
 
 ## Ready-to-use dashboard helpers
 
