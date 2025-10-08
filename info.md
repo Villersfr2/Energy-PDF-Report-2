@@ -106,6 +106,85 @@ action:
 mode: single
 ```
 
+@@ -84,32 +84,61 @@ The PDF is saved inside the configured `output_dir`. If you keep the default pat
+## Automating report generation
+## Automating report generation
+
+
+Schedule recurring reports using standard Home Assistant automations. The example below generates a monthly English report on the first day of each month and sends a link through a notification:
+Schedule recurring reports using standard Home Assistant automations. The example below generates a monthly English report on the first day of each month and sends a link through a notification:
+
+
+```yaml
+```yaml
+alias: Monthly energy PDF
+alias: Monthly energy PDF
+trigger:
+trigger:
+  - platform: time
+  - platform: time
+    at: "08:00:00"
+    at: "08:00:00"
+condition:
+condition:
+  - condition: template
+  - condition: template
+    value_template: "{{ now().day == 1 }}"
+    value_template: "{{ now().day == 1 }}"
+action:
+action:
+  - service: energy_pdf_report.generate
+  - service: energy_pdf_report.generate
+    data:
+    data:
+      period: month
+      period: month
+      language: en
+      language: en
+  - delay: "00:01:00"  # wait for the PDF to be written
+  - delay: "00:01:00"  # wait for the PDF to be written
+  - service: notify.mobile_app_phone
+  - service: notify.mobile_app_phone
+    data:
+    data:
+      title: "Monthly energy report"
+      title: "Monthly energy report"
+      message: "Your latest energy PDF is available in /local/energy_reports/."
+      message: "Your latest energy PDF is available in /local/energy_reports/."
+mode: single
+mode: single
+```
+```
+
+
+## Ready-to-use dashboard helpers
+
+Bring the packaged helpers into your Home Assistant instance in two quick steps.
+
+### 1. Install the helper package
+
+1. Copy `packages/energy_pdf_report.yaml` into your Home Assistant configuration.
+2. If you do not already load packages, add the following snippet to `configuration.yaml` and restart:
+
+   ```yaml
+   homeassistant:
+     packages: !include_dir_named packages
+   ```
+
+3. Reload the helpers from **Settings → Devices & Services → Helpers** (or restart) so the input selects, toggles, and script become available.
+
+### 2. Import the Lovelace view
+
+1. Copy `dashboards/energy_pdf_report.yaml` and add it as a manual dashboard (or merge the cards into an existing view).
+2. Update the `image:` path in the picture card if you store the screenshot elsewhere. Download the preview image from `assets/dashboard-preview.png` (published separately in the repository) and copy it to `/config/www/community/energy_pdf_report/dashboard-preview.png`, or adjust the card to point at your preferred location or your own screenshot.
+3. Reload the dashboard to expose the UI controls that call `energy_pdf_report.generate` with the selected options.
+
+<figure>
+  <img src="assets/dashboard-preview.png" alt="Exemple de dashboard Energy PDF Report" />
+  <figcaption>Exemple de dashboard Energy PDF Report avec package et vue Lovelace fournis.</figcaption>
+</figure>
+
+> 📸 **Astuce** : l'image d'aperçu se trouve dans le dépôt GitHub (`assets/dashboard-preview.png`). Vous pouvez également remplacer la balise `<img>` par votre propre capture du tableau de bord si vous préférez.
 ## Troubleshooting
 
 - Ensure the recorder includes statistics for every entity referenced by the integration; missing statistics will prevent the related rows from appearing.
