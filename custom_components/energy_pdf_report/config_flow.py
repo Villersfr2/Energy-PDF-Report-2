@@ -241,3 +241,13 @@ class EnergyPDFReportOptionsFlowHandler(config_entries.OptionsFlow):
 async def async_get_options_flow(config_entry: config_entries.ConfigEntry):
     """Retourner le gestionnaire d’options."""
     return EnergyPDFReportOptionsFlowHandler(config_entry)
+
+
+# Compatibilité : enregistrer explicitement le flow d'options lorsque
+# l'API moderne est disponible (Home Assistant 2024.8+). Cela garantit que
+# l'interface affiche l'icône "paramètres" même si la découverte automatique
+# échoue sur certaines versions.
+if hasattr(config_entries, "OPTIONS_FLOW") and hasattr(
+    config_entries.OPTIONS_FLOW, "register"
+):
+    config_entries.OPTIONS_FLOW.register(DOMAIN)(EnergyPDFReportOptionsFlowHandler)
