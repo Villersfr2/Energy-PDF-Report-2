@@ -247,7 +247,27 @@ async def async_get_options_flow(config_entry: config_entries.ConfigEntry):
 # l'API moderne est disponible (Home Assistant 2024.8+). Cela garantit que
 # l'interface affiche l'icône "paramètres" même si la découverte automatique
 # échoue sur certaines versions.
-if hasattr(config_entries, "OPTIONS_FLOW") and hasattr(
-    config_entries.OPTIONS_FLOW, "register"
-):
-    config_entries.OPTIONS_FLOW.register(DOMAIN)(EnergyPDFReportOptionsFlowHandler)
+def _register_options_flow_handler() -> None:
+    """Enregistrer l'options flow via l'API moderne si disponible."""
+
+    manager = getattr(config_entries, "OPTIONS_FLOW", None)
+    if manager is None or not hasattr(manager, "register"):
+        return
+
+    try:
+        register = getattr(manager, "register")
+        factory_decorator = register(DOMAIN)
+    except Exception:  # pragma: no cover - robuste à différents HA
+        return
+
+    def _factory(config_entry: config_entries.ConfigEntry) -> EnergyPDFReportOptionsFlowHandler:
+        return EnergyPDFReportOptionsFlowHandler(config_entry)
+
+    try:
+        factory_decorator(_factory)
+    except ValueError:
+        # Déjà enregistré par une autre importation / instance – ignorer
+        pass
+
+
+_register_options_flow_handler()
