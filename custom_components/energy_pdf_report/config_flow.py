@@ -8,11 +8,9 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.core import callback
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
-try:
-    from homeassistant.data_entry_flow import FlowResult
-except ImportError:  # pragma: no cover - compat with older versions
-    FlowResult = dict[str, Any]
 
 from homeassistant.helpers import config_validation as cv
 
@@ -210,6 +208,15 @@ class EnergyPDFReportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._reconfigure_entry = None
         return await self.async_step_user()
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Retourner le gestionnaire d'options pour cette entrée."""
+
+        return EnergyPDFReportOptionsFlowHandler(config_entry)
+
 
 class EnergyPDFReportOptionsFlowHandler(config_entries.OptionsFlow):
     """Gérer les options pour Energy PDF Report."""
@@ -236,38 +243,3 @@ class EnergyPDFReportOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="init",
             data_schema=_build_schema(defaults),
         )
-
-
-async def async_get_options_flow(config_entry: config_entries.ConfigEntry):
-    """Retourner le gestionnaire d’options."""
-    return EnergyPDFReportOptionsFlowHandler(config_entry)
-
-
-# Compatibilité : enregistrer explicitement le flow d'options lorsque
-# l'API moderne est disponible (Home Assistant 2024.8+). Cela garantit que
-# l'interface affiche l'icône "paramètres" même si la découverte automatique
-# échoue sur certaines versions.
-def _register_options_flow_handler() -> None:
-    """Enregistrer l'options flow via l'API moderne si disponible."""
-
-    manager = getattr(config_entries, "OPTIONS_FLOW", None)
-    if manager is None or not hasattr(manager, "register"):
-        return
-
-    try:
-        register = getattr(manager, "register")
-        factory_decorator = register(DOMAIN)
-    except Exception:  # pragma: no cover - robuste à différents HA
-        return
-
-    def _factory(config_entry: config_entries.ConfigEntry) -> EnergyPDFReportOptionsFlowHandler:
-        return EnergyPDFReportOptionsFlowHandler(config_entry)
-
-    try:
-        factory_decorator(_factory)
-    except ValueError:
-        # Déjà enregistré par une autre importation / instance – ignorer
-        pass
-
-
-_register_options_flow_handler()
