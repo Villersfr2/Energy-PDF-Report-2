@@ -1791,31 +1791,40 @@ async def _collect_co2_statistics(
             state_class_obj = meta_entry[1].get("state_class")
             if isinstance(state_class_obj, str):
                 state_class = state_class_obj
+
         daily_totals: dict[date, Decimal] | None = None
         if state_class == "total":
             daily_totals = {}
+
         for row in rows:
             if not _row_starts_before(row, end):
                 continue
+
             if state_class == "total":
                 sum_value = _normalize_statistic_value(row.get("sum"))
                 if sum_value is None:
                     continue
+
                 row_start: Any = getattr(row, "start", None)
                 if row_start is None and isinstance(row, Mapping):
                     row_start = row.get("start")
-                row_start_dt: datetime | None
+
                 if isinstance(row_start, str):
                     row_start_dt = dt_util.parse_datetime(row_start)
                 elif isinstance(row_start, datetime):
                     row_start_dt = row_start
                 else:
                     row_start_dt = None
+
                 if row_start_dt is None:
                     continue
+
                 if row_start_dt.tzinfo is None:
                     row_start_dt = row_start_dt.replace(tzinfo=dt_util.UTC)
-                day_key = dt_util.as_local(row_start_dt).date()
+                else:
+                    row_start_dt = dt_util.as_utc(row_start_dt)
+
+                day_key = row_start_dt.date()
                 existing = daily_totals.get(day_key)
                 if existing is None or sum_value > existing:
                     daily_totals[day_key] = sum_value
