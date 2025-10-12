@@ -15,6 +15,15 @@ Generate beautifully formatted PDF summaries of your Home Assistant Energy Dashb
 
 - Home Assistant with the Energy Dashboard configured and recording statistics for the entities you want to include.
 - Recorder enabled so historical statistics can be fetched for the requested period(s).
+- Price and CO₂ sensors must expose long-term statistics with a daily `change` column. In practice, use
+  entities whose `state_class` is `total_increasing` (or a `utility_meter`/Energy Dashboard helper built from
+  such sensors) so that Home Assistant records the cumulative cost or emission total that the integration can
+  sum over the selected period. The integration keeps a positive `change` when available, but when Home
+  Assistant reports a non-positive `change` during a reset it prefers the positive `sum` provided by the
+  recorder (falling back to the absolute delta only if both are missing) so the PDF remains accurate for
+  counters that reset or drift backwards.
+- Very small CO₂ and price variations (for example `0.039` kgCO₂e of water) are summed using the original
+  statistics and rendered without rounding so they remain `0.039` instead of `0.04` in the PDF tables.
 - (Optional) An OpenAI API key if you want to enable the advisor section of the report.
 
 ## Installation via HACS
@@ -64,6 +73,15 @@ Use the `energy_pdf_report.generate` service from **Developer Tools → Services
 | `compare` | Boolean | Enable comparison with a secondary period. Requires `compare_start_date` and `compare_end_date`. |
 | `compare_start_date` | Date | First day of the comparison range when `compare` is true. |
 | `compare_end_date` | Date | Last day of the comparison range when `compare` is true. |
+
+### How period boundaries are applied
+
+The integration always treats `start_date` and `end_date` as inclusive calendar
+days. Internally it converts the end of the range to an exclusive timestamp
+(`end_date + 1 day`) before querying Home Assistant statistics. The same
+normalized start/end timestamps are reused for energy metrics, price totals, and
+CO₂ totals, so every section of the PDF covers exactly the same days regardless
+of the data source.
 
 Example service call:
 
