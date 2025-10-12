@@ -1730,7 +1730,7 @@ async def _collect_co2_statistics(
         statistic_ids,
         "day",
         None,
-        {"change", "sum"},
+        {"sum"},
     )
 
     for entity_id in statistic_ids:
@@ -1743,11 +1743,11 @@ async def _collect_co2_statistics(
         for row in rows:
             if not _row_starts_before(row, end):
                 continue
-            contribution = _select_counter_total(row)
-            if contribution is None:
+            sum_value = _normalize_statistic_value(row.get("sum"))
+            if sum_value is None:
                 continue
             has_sum = True
-            total += contribution
+            total += sum_value
 
         if has_sum:
             definition = entity_map[entity_id]
