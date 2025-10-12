@@ -1609,6 +1609,31 @@ async def _collect_statistics(
     return StatisticsResult(stats_map, metadata)
 
 
+def _coerce_stat_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _select_positive_change(row: StatisticsRow) -> float | None:
+    change_value = _coerce_stat_value(row.get("change"))
+    sum_value = _coerce_stat_value(row.get("sum"))
+
+    if change_value is not None and change_value >= 0:
+        return change_value
+
+    if sum_value is not None and sum_value >= 0:
+        return sum_value
+
+    if change_value is not None:
+        return change_value
+
+    return sum_value
+
+
 async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
@@ -1638,7 +1663,7 @@ async def _collect_co2_statistics(
         statistic_ids,
         "day",
         None,
-        {"change"},
+        {"change", "sum"},
     )
 
     for entity_id in statistic_ids:
@@ -1649,11 +1674,11 @@ async def _collect_co2_statistics(
         total = 0.0
         has_sum = False
         for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
+            contribution = _select_positive_change(row)
+            if contribution is None:
                 continue
             has_sum = True
-            total += float(change_value)
+            total += contribution
 
         if has_sum:
             definition = entity_map[entity_id]
@@ -1691,7 +1716,7 @@ async def _collect_price_statistics(
         statistic_ids,
         "day",
         None,
-        {"change"},
+        {"change", "sum"},
     )
 
     for entity_id in statistic_ids:
@@ -1702,11 +1727,11 @@ async def _collect_price_statistics(
         total = 0.0
         has_sum = False
         for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
+            contribution = _select_positive_change(row)
+            if contribution is None:
                 continue
             has_sum = True
-            total += float(change_value)
+            total += contribution
 
         if has_sum:
             definition = entity_map[entity_id]
