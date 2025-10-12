@@ -72,6 +72,15 @@ Use the `energy_pdf_report.generate` service from **Developer Tools → Services
 | `compare_start_date` | Date | First day of the comparison range when `compare` is true. |
 | `compare_end_date` | Date | Last day of the comparison range when `compare` is true. |
 
+### How period boundaries are applied
+
+The integration always treats `start_date` and `end_date` as inclusive calendar
+days. Internally it converts the end of the range to an exclusive timestamp
+(`end_date + 1 day`) before querying Home Assistant statistics. The same
+normalized start/end timestamps are reused for energy metrics, price totals, and
+CO₂ totals, so every section of the PDF covers exactly the same days regardless
+of the data source.
+
 Example service call:
 
 ```yaml
