@@ -1635,26 +1635,20 @@ def _normalize_statistic_value(value: Any) -> float | None:
 def _select_counter_total(row: StatisticsRow) -> float | None:
     """Choisir la contribution quotidienne à partir d'une ligne de statistiques."""
 
-    sum_value = _normalize_statistic_value(row.get("sum"))
     change_value = _normalize_statistic_value(row.get("change"))
-
-    if sum_value is not None:
-        if sum_value > 0:
-            return sum_value
-
-        if change_value is None:
-            return abs(sum_value)
-
-        if change_value > 0:
+    if change_value is not None:
+        if change_value >= 0:
             return change_value
+        return abs(change_value)
 
-    if change_value is None:
+    sum_value = _normalize_statistic_value(row.get("sum"))
+    if sum_value is None:
         return None
 
-    if change_value >= 0:
-        return change_value
+    if sum_value >= 0:
+        return sum_value
 
-    return abs(change_value)
+    return abs(sum_value)
 
 
 async def _collect_co2_statistics(

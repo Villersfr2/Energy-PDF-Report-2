@@ -18,9 +18,9 @@ Generate beautifully formatted PDF summaries of your Home Assistant Energy Dashb
 - Price and CO₂ sensors must expose long-term statistics with a daily `change` column. In practice, use
   entities whose `state_class` is `total_increasing` (or a `utility_meter`/Energy Dashboard helper built from
   such sensors) so that Home Assistant records the cumulative cost or emission total that the integration can
-  sum over the selected period. When Home Assistant only exposes a positive `sum` (for example, meters that
-  reset to zero every night) or reports a negative `change` during the reset, the integration now reuses the
-  positive value so the PDF never displays a negative total for those counters.
+  sum over the selected period. If Home Assistant reports a negative `change` while the counter resets, the
+  integration keeps the absolute delta; it only falls back to a positive `sum` when no usable `change`
+  value is available, so the PDF never displays negative totals for well-behaved counters.
 - (Optional) An OpenAI API key if you want to enable the advisor section of the report.
 
 ## Installation via HACS
