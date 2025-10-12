@@ -15,6 +15,10 @@ Generate beautifully formatted PDF summaries of your Home Assistant Energy Dashb
 
 - Home Assistant with the Energy Dashboard configured and recording statistics for the entities you want to include.
 - Recorder enabled so historical statistics can be fetched for the requested period(s).
+- Price and CO₂ sensors must expose long-term statistics with a daily `change` column. In practice, use
+  entities whose `state_class` is `total_increasing` (or a `utility_meter`/Energy Dashboard helper built from
+  such sensors) so that Home Assistant records the cumulative cost or emission total that the integration can
+  sum over the selected period.
 - (Optional) An OpenAI API key if you want to enable the advisor section of the report.
 
 ## Installation via HACS
