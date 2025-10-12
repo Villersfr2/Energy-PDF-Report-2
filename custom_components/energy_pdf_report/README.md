@@ -65,6 +65,12 @@ Use the `energy_pdf_report.generate` service from **Developer Tools → Services
 | `compare_start_date` | Date | First day of the comparison range when `compare` is true. |
 | `compare_end_date` | Date | Last day of the comparison range when `compare` is true. |
 
+### How the `period` field is used
+
+- **Default range selection** – When `start_date` or `end_date` is omitted, the integration expands the selected `period` into an inclusive date window before fetching energy, price, and CO₂ statistics.
+- **Recorder granularity** – The same `period` drives the statistic bucket (`hour` or `day`) requested from the recorder so that the totals match the Energy Dashboard view for that range.
+- **File naming** – The resolved `period` value is injected into the filename pattern, allowing you to build names such as `energy_report_week_2024-10-04_2024-10-10.pdf` automatically.
+
 Example service call:
 
 ```yaml
@@ -109,6 +115,7 @@ mode: single
 ## Troubleshooting
 
 - Ensure the recorder includes statistics for every entity referenced by the integration; missing statistics will prevent the related rows from appearing.
+- When tracking very small CO₂ or price counters (for example water emissions around `0.039` kgCO₂e per day), the integration accumulates their daily statistics with decimal arithmetic and the PDF prints those values without rounding so they can be re-used in downstream calculations.
 - If the report generation service fails, check **Settings → System → Logs** for detailed error messages.
 - When the AI advisor is enabled, verify that your OpenAI API key is valid and that outbound HTTPS requests are permitted from your Home Assistant host.
 
