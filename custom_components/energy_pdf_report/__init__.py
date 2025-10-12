@@ -1636,12 +1636,24 @@ def _select_counter_total(row: StatisticsRow) -> float | None:
     """Choisir la contribution quotidienne à partir d'une ligne de statistiques."""
 
     change_value = _normalize_statistic_value(row.get("change"))
+    sum_value = _normalize_statistic_value(row.get("sum"))
+
     if change_value is not None:
-        if change_value >= 0:
+        if change_value > 0:
             return change_value
+
+        if change_value == 0:
+            # Aucune variation détectée; un sum positif peut encore refléter la
+            # consommation réelle si le compteur s'est remis à zéro.
+            if sum_value is not None and sum_value > 0:
+                return sum_value
+            return 0.0
+
+        # change négatif → privilégier un sum positif, sinon utiliser l'absolu
+        if sum_value is not None and sum_value > 0:
+            return sum_value
         return abs(change_value)
 
-    sum_value = _normalize_statistic_value(row.get("sum"))
     if sum_value is None:
         return None
 
