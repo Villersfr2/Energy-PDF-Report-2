@@ -1663,6 +1663,33 @@ def _select_counter_total(row: StatisticsRow) -> float | None:
     return abs(sum_value)
 
 
+def _row_starts_before(row: StatisticsRow, end: datetime) -> bool:
+    """Vérifier que la ligne appartient bien à la fenêtre demandée."""
+
+    row_start: Any = getattr(row, "start", None)
+    if row_start is None and isinstance(row, Mapping):
+        row_start = row.get("start")
+
+    if row_start is None:
+        return True
+
+    if isinstance(row_start, str):
+        parsed = dt_util.parse_datetime(row_start)
+        if parsed is None:
+            return True
+        row_start = parsed
+
+    if isinstance(row_start, datetime):
+        if row_start.tzinfo is None:
+            row_start = row_start.replace(tzinfo=dt_util.UTC)
+        else:
+            row_start = dt_util.as_utc(row_start)
+
+        return row_start < end
+
+    return True
+
+
 async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
@@ -1703,6 +1730,8 @@ async def _collect_co2_statistics(
         total = 0.0
         has_sum = False
         for row in rows:
+            if not _row_starts_before(row, end):
+                continue
             contribution = _select_counter_total(row)
             if contribution is None:
                 continue
@@ -1756,6 +1785,8 @@ async def _collect_price_statistics(
         total = 0.0
         has_sum = False
         for row in rows:
+            if not _row_starts_before(row, end):
+                continue
             contribution = _select_counter_total(row)
             if contribution is None:
                 continue
