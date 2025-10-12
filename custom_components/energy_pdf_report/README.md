@@ -115,7 +115,7 @@ mode: single
 ## Troubleshooting
 
 - Ensure the recorder includes statistics for every entity referenced by the integration; missing statistics will prevent the related rows from appearing.
-- When tracking very small CO₂ or price counters (for example water emissions around `0.039` kgCO₂e per day), the integration keeps the original statistic precision and the PDF prints those values without rounding so they can be re-used in downstream calculations.
+- When tracking very small CO₂ or price counters (for example water emissions around `0.039` kgCO₂e per day), the integration accumulates their daily statistics with decimal arithmetic and the PDF prints those values without rounding so they can be re-used in downstream calculations.
 - If the report generation service fails, check **Settings → System → Logs** for detailed error messages.
 - When the AI advisor is enabled, verify that your OpenAI API key is valid and that outbound HTTPS requests are permitted from your Home Assistant host.
 

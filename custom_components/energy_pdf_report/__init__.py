@@ -12,6 +12,7 @@ import string
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, tzinfo
+from decimal import Decimal, InvalidOperation
 
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
@@ -703,7 +704,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     if price_enabled:
         price_definitions = _build_price_sensor_definitions(options)
 
-    co2_totals: dict[str, float] = {}
+    co2_totals: dict[str, Decimal] = {}
     if co2_definitions:
         co2_totals = await _collect_co2_statistics(
             hass,
@@ -712,7 +713,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             co2_definitions,
         )
 
-    price_totals: dict[str, float] = {}
+    price_totals: dict[str, Decimal] = {}
     if price_definitions:
         price_totals = await _collect_price_statistics(
             hass,
@@ -1610,29 +1611,30 @@ async def _collect_statistics(
     return StatisticsResult(stats_map, metadata)
 
 
-def _coerce_stat_value(value: Any) -> float | None:
+_DECIMAL_ZERO = Decimal("0")
+
+
+def _normalize_statistic_value(value: Any) -> Decimal | None:
+    """Convertir une valeur de statistique en décimal exploitable."""
+
     if value is None:
         return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
+
+    if isinstance(value, Decimal):
+        decimal_value = value
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    if not decimal_value.is_finite():
         return None
 
-
-def _normalize_statistic_value(value: Any) -> float | None:
-    """Convertir une valeur de statistique en flottant exploitable."""
-
-    coerced = _coerce_stat_value(value)
-    if coerced is None:
-        return None
-
-    if isinstance(coerced, float) and math.isnan(coerced):
-        return None
-
-    return coerced
+    return decimal_value
 
 
-def _select_counter_total(row: StatisticsRow) -> float | None:
+def _select_counter_total(row: StatisticsRow) -> Decimal | None:
     """Choisir la contribution quotidienne à partir d'une ligne de statistiques."""
 
     change_value = _normalize_statistic_value(row.get("change"))
@@ -1647,12 +1649,12 @@ def _select_counter_total(row: StatisticsRow) -> float | None:
             # consommation réelle si le compteur s'est remis à zéro.
             if sum_value is not None and sum_value > 0:
                 return sum_value
-            return 0.0
+            return _DECIMAL_ZERO
 
         # change négatif → privilégier un sum positif, sinon utiliser l'absolu
         if sum_value is not None and sum_value > 0:
             return sum_value
-        return abs(change_value)
+        return change_value.copy_abs()
 
     if sum_value is None:
         return None
@@ -1660,7 +1662,7 @@ def _select_counter_total(row: StatisticsRow) -> float | None:
     if sum_value >= 0:
         return sum_value
 
-    return abs(sum_value)
+    return sum_value.copy_abs()
 
 
 def _row_starts_before(row: StatisticsRow, end: datetime) -> bool:
@@ -1690,17 +1692,26 @@ def _row_starts_before(row: StatisticsRow, end: datetime) -> bool:
     return True
 
 
+def _normalize_total_value(value: Any) -> Decimal:
+    """Garantir une valeur décimale exploitable pour les totaux cumulés."""
+
+    normalized = _normalize_statistic_value(value)
+    if normalized is None:
+        return _DECIMAL_ZERO
+    return normalized
+
+
 async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
     end: datetime,
     sensors: Iterable[CO2SensorDefinition],
-) -> dict[str, float]:
+) -> dict[str, Decimal]:
     """Assembler les totaux CO₂ sur la période demandée."""
 
     definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
+    results: dict[str, Decimal] = {
+        definition.translation_key: _DECIMAL_ZERO for definition in definitions
     }
 
     if not definitions:
@@ -1727,7 +1738,7 @@ async def _collect_co2_statistics(
         if not rows:
             continue
 
-        total = 0.0
+        total = Decimal("0")
         has_sum = False
         for row in rows:
             if not _row_starts_before(row, end):
@@ -1750,12 +1761,12 @@ async def _collect_price_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[PriceSensorDefinition],
-) -> dict[str, float]:
+) -> dict[str, Decimal]:
     """Assembler les totaux financiers sur la période demandée."""
 
     definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
+    results: dict[str, Decimal] = {
+        definition.translation_key: _DECIMAL_ZERO for definition in definitions
     }
 
     if not definitions:
@@ -1782,7 +1793,7 @@ async def _collect_price_statistics(
         if not rows:
             continue
 
-        total = 0.0
+        total = Decimal("0")
         has_sum = False
         for row in rows:
             if not _row_starts_before(row, end):
@@ -1908,10 +1919,10 @@ def _build_pdf(
     translations: ReportTranslations,
 
     co2_definitions: Iterable[CO2SensorDefinition],
-    co2_totals: dict[str, float],
+    co2_totals: Mapping[str, Decimal],
 
     price_definitions: Iterable[PriceSensorDefinition],
-    price_totals: dict[str, float],
+    price_totals: Mapping[str, Decimal],
 
     advice_text: str,
     conclusion_summary: ConclusionSummary | None = None,
@@ -2090,11 +2101,13 @@ def _build_pdf(
         builder.add_paragraph(translations.price_section_intro)
 
         price_rows: list[tuple[str, str, str]] = []
-        expenses_total = 0.0
-        income_total = 0.0
+        expenses_total = Decimal("0")
+        income_total = Decimal("0")
 
         for definition in price_definitions:
-            value = price_totals_map.get(definition.translation_key, 0.0)
+            value = _normalize_total_value(
+                price_totals_map.get(definition.translation_key, _DECIMAL_ZERO)
+            )
             label = translations.price_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -2133,8 +2146,8 @@ def _build_pdf(
 
     totals_map = co2_totals or {}
     co2_rows: list[tuple[str, str, str]] = []
-    emissions_total = 0.0
-    savings_total = 0.0
+    emissions_total = Decimal("0")
+    savings_total = Decimal("0")
 
 
     if co2_definitions:
@@ -2142,11 +2155,13 @@ def _build_pdf(
         builder.add_paragraph(translations.co2_section_intro)
 
         co2_rows: list[tuple[str, str, str]] = []
-        emissions_total = 0.0
-        savings_total = 0.0
+        emissions_total = Decimal("0")
+        savings_total = Decimal("0")
 
         for definition in co2_definitions:
-            value = totals_map.get(definition.translation_key, 0.0)
+            value = _normalize_total_value(
+                totals_map.get(definition.translation_key, _DECIMAL_ZERO)
+            )
             label = translations.co2_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -2743,23 +2758,49 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _format_number(value: float) -> str:
+def _format_number(value: Decimal | float) -> str:
     """Formater une valeur numérique de manière lisible."""
 
-    if abs(value) < 0.0005:
-        value = 0.0
+    magnitude = float(abs(value))
+    if magnitude < 0.0005:
+        return "0"
 
-    if abs(value) >= 1000:
+    if magnitude >= 1000:
         formatted = f"{value:,.0f}"
-    elif abs(value) >= 10:
+    elif magnitude >= 10:
         formatted = f"{value:,.1f}"
-    else:
+    elif magnitude >= 1:
         formatted = f"{value:,.3f}"
+    else:
+        return _format_small_decimal(value)
 
     return formatted.replace(",", " ")
 
 
-def _format_with_unit(value: float, unit: str | None) -> str:
+def _format_small_decimal(value: Decimal | float) -> str:
+    """Conserver la précision des petites valeurs sans les arrondir."""
+
+    if isinstance(value, Decimal):
+        decimal_value = value
+    else:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            decimal_value = Decimal("0")
+
+    normalized = decimal_value.normalize()
+    formatted = format(normalized, "f")
+
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+
+    if not formatted or formatted in {"0", "-0", "0.0", "-0.0"}:
+        return "0"
+
+    return formatted
+
+
+def _format_with_unit(value: Decimal | float, unit: str | None) -> str:
     """Associer un formatage numérique avec une unité si disponible."""
 
     formatted = _format_number(value)
