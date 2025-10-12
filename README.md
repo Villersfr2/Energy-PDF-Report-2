@@ -22,6 +22,8 @@ Generate beautifully formatted PDF summaries of your Home Assistant Energy Dashb
   Assistant reports a non-positive `change` during a reset it prefers the positive `sum` provided by the
   recorder (falling back to the absolute delta only if both are missing) so the PDF remains accurate for
   counters that reset or drift backwards.
+- Very small CO₂ and price variations (for example `0.039` kgCO₂e of water) are summed using the original
+  statistics and rendered without rounding so they remain `0.039` instead of `0.04` in the PDF tables.
 - (Optional) An OpenAI API key if you want to enable the advisor section of the report.
 
 ## Installation via HACS
