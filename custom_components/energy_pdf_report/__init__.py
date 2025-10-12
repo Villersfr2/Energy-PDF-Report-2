@@ -1785,12 +1785,20 @@ async def _collect_co2_statistics(
 
         total = Decimal("0")
         has_sum = False
-        meta_entry = metadata.get(entity_id)
         state_class: str | None = None
-        if meta_entry:
-            state_class_obj = meta_entry[1].get("state_class")
-            if isinstance(state_class_obj, str):
-                state_class = state_class_obj
+
+        state_obj = hass.states.get(entity_id)
+        if state_obj is not None:
+            state_class_attr = state_obj.attributes.get("state_class")
+            if isinstance(state_class_attr, str):
+                state_class = state_class_attr
+
+        if state_class is None:
+            meta_entry = metadata.get(entity_id)
+            if meta_entry:
+                state_class_obj = meta_entry[1].get("state_class")
+                if isinstance(state_class_obj, str):
+                    state_class = state_class_obj
 
         daily_totals: dict[date, Decimal] | None = None
         if state_class == "total":
