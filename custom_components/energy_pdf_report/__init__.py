@@ -1730,8 +1730,53 @@ async def _collect_co2_statistics(
         statistic_ids,
         "day",
         None,
-        {"sum"},
+        {"change", "sum"},
     )
+
+    metadata_requires_hass = _recorder_metadata_requires_hass()
+    metadata: dict[str, tuple[int, StatisticMetaData]]
+
+    try:
+        if metadata_requires_hass:
+            metadata = await instance.async_add_executor_job(
+                _get_recorder_metadata_with_hass,
+                hass,
+                set(statistic_ids),
+            )
+        else:
+            metadata = await instance.async_add_executor_job(
+                recorder_statistics.get_metadata,
+                set(statistic_ids),
+            )
+    except TypeError as err:
+        err_message = str(err)
+
+        if metadata_requires_hass and _metadata_error_indicates_legacy_signature(err_message):
+            _LOGGER.debug(
+                "Recorder get_metadata ne supporte pas hass en argument, bascule sur la signature héritée: %s",
+                err_message,
+            )
+            _set_recorder_metadata_requires_hass(False)
+            metadata = await instance.async_add_executor_job(
+                recorder_statistics.get_metadata,
+                set(statistic_ids),
+            )
+        elif (
+            not metadata_requires_hass
+            and _metadata_error_indicates_requires_hass(err_message)
+        ):
+            _LOGGER.debug(
+                "Recorder get_metadata nécessite hass, nouvelle tentative avec la signature actuelle: %s",
+                err_message,
+            )
+            _set_recorder_metadata_requires_hass(True)
+            metadata = await instance.async_add_executor_job(
+                _get_recorder_metadata_with_hass,
+                hass,
+                set(statistic_ids),
+            )
+        else:
+            raise
 
     for entity_id in statistic_ids:
         rows = stats_map.get(entity_id)
@@ -1740,14 +1785,28 @@ async def _collect_co2_statistics(
 
         total = Decimal("0")
         has_sum = False
+        meta_entry = metadata.get(entity_id)
+        state_class: str | None = None
+        if meta_entry:
+            state_class_obj = meta_entry[1].get("state_class")
+            if isinstance(state_class_obj, str):
+                state_class = state_class_obj
         for row in rows:
             if not _row_starts_before(row, end):
                 continue
-            sum_value = _normalize_statistic_value(row.get("sum"))
-            if sum_value is None:
+            if state_class == "total":
+                sum_value = _normalize_statistic_value(row.get("sum"))
+                if sum_value is None:
+                    continue
+                has_sum = True
+                total += sum_value
+                continue
+
+            contribution = _select_counter_total(row)
+            if contribution is None:
                 continue
             has_sum = True
-            total += sum_value
+            total += contribution
 
         if has_sum:
             definition = entity_map[entity_id]
