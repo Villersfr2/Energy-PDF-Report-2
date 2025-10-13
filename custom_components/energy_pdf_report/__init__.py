@@ -1562,7 +1562,9 @@ def _extract_row_total(row: Mapping[str, Any] | StatisticsRow) -> float | None:
 
 
 def _sum_daily_totals(
-    rows: Iterable[Mapping[str, Any] | StatisticsRow], timezone: tzinfo
+    rows: Iterable[Mapping[str, Any] | StatisticsRow],
+    timezone: tzinfo,
+    end: datetime,
 ) -> dict[date, float]:
     """Construire le total quotidien maximum pour chaque journée locale."""
 
@@ -1570,6 +1572,9 @@ def _sum_daily_totals(
     daily_changes: defaultdict[date, float] = defaultdict(float)
 
     for row in rows:
+        if not _row_starts_before(row, end, timezone):
+            continue
+
         start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
         if start_dt is None:
             continue
@@ -1650,7 +1655,7 @@ async def _collect_totals_for_sensors(
         if not rows_list:
             continue
 
-        daily_max_sums = _sum_daily_totals(rows_list, timezone)
+        daily_max_sums = _sum_daily_totals(rows_list, timezone, end)
         if not daily_max_sums:
             continue
 
