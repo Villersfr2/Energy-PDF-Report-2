@@ -131,9 +131,10 @@ def _build_schema(defaults: Mapping[str, Any]) -> vol.Schema:
     return vol.Schema(schema_dict)
 
 
-class EnergyPDFReportConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class EnergyPDFReportConfigFlow(config_entries.ConfigFlow):
     """Config flow for Energy PDF Report."""
 
+    domain = DOMAIN
     VERSION = 1
 
     def __init__(self) -> None:
