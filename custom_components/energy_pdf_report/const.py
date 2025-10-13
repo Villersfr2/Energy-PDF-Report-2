@@ -5,7 +5,7 @@ from __future__ import annotations
 DOMAIN = "energy_pdf_report"
 SERVICE_GENERATE_REPORT = "generate"
 DEFAULT_PERIOD = "day"
-VALID_PERIODS: tuple[str, ...] = ("day", "week", "month")
+VALID_PERIODS: tuple[str, ...] = ("day", "week", "month", "custom")
 
 DEFAULT_REPORT_TYPE = "week"
 
