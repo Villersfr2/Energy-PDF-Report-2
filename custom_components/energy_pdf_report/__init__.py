@@ -1787,6 +1787,49 @@ def _resolve_state_class_for_entity(
     return None
 
 
+def _sum_daily_max_values(
+    rows: Iterable[StatisticsRow] | None,
+    timezone: tzinfo,
+) -> Decimal | None:
+    """Additionner la valeur maximale `sum` pour chaque jour local."""
+
+    if not rows:
+        return None
+
+    daily_max: dict[date, Decimal] = {}
+
+    for row in rows:
+        sum_value = _decimal_from_value(row.get("sum"))
+        if sum_value is None:
+            sum_value = _decimal_from_value(row.get("state"))
+
+        if sum_value is None:
+            continue
+
+        timestamp = row.get("start") or row.get("end")
+        if not isinstance(timestamp, datetime):
+            continue
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt_util.UTC)
+
+        local_dt = timestamp.astimezone(timezone)
+        local_day = local_dt.date()
+
+        current_max = daily_max.get(local_day)
+        if current_max is None or sum_value > current_max:
+            daily_max[local_day] = sum_value
+
+    if not daily_max:
+        return None
+
+    total = Decimal("0")
+    for value in daily_max.values():
+        total += value
+
+    return total
+
+
 async def _collect_total_state_values(
     hass: HomeAssistant,
     instance: Any,
@@ -1794,8 +1837,13 @@ async def _collect_total_state_values(
     rows: list[StatisticsRow],
     start: datetime,
     end: datetime,
+    timezone: tzinfo,
 ) -> Decimal:
     """Calculer la somme totale pour un capteur avec `state_class = total`."""
+
+    daily_max_total = _sum_daily_max_values(rows, timezone)
+    if daily_max_total is not None:
+        return daily_max_total
 
     difference = _calculate_last_minus_first(rows)
     if difference is not None:
@@ -1813,6 +1861,10 @@ async def _collect_total_state_values(
     )
 
     period_rows = period_map.get(entity_id) if period_map else None
+    fallback_daily_max = _sum_daily_max_values(period_rows, timezone)
+    if fallback_daily_max is not None:
+        return fallback_daily_max
+
     fallback_difference = _calculate_last_minus_first(period_rows)
     if fallback_difference is not None:
         return fallback_difference
@@ -1859,6 +1911,8 @@ async def _collect_totals_for_sensors(
         hass, instance, set(statistic_ids)
     )
 
+    timezone = _select_timezone(hass)
+
     for entity_id, definition in entity_map.items():
         rows = stats_map.get(entity_id) or []
         rows_list = list(rows) if rows else []
@@ -1872,6 +1926,7 @@ async def _collect_totals_for_sensors(
                 rows_list,
                 start,
                 end,
+                timezone,
             )
         else:
             total = _sum_changes(rows_list)
