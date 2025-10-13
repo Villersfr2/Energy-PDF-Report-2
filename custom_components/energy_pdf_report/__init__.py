@@ -1701,6 +1701,56 @@ def _normalize_total_value(value: Any) -> Decimal:
     return normalized
 
 
+def _aggregate_hourly_statistics_to_daily(
+    rows: Iterable[StatisticsRow],
+) -> list[StatisticsRow]:
+    """Agréger des statistiques horaires en relevés journaliers."""
+
+    daily_latest: dict[date, tuple[datetime, Decimal]] = {}
+
+    for row in rows:
+        sum_value_raw: Any = getattr(row, "sum", None)
+        if sum_value_raw is None and isinstance(row, Mapping):
+            sum_value_raw = row.get("sum")
+
+        sum_value = _normalize_statistic_value(sum_value_raw)
+        if sum_value is None:
+            continue
+
+        row_start: Any = getattr(row, "start", None)
+        if row_start is None and isinstance(row, Mapping):
+            row_start = row.get("start")
+
+        if isinstance(row_start, str):
+            row_start_dt = dt_util.parse_datetime(row_start)
+        elif isinstance(row_start, datetime):
+            row_start_dt = row_start
+        else:
+            row_start_dt = None
+
+        if row_start_dt is None:
+            continue
+
+        if row_start_dt.tzinfo is None:
+            row_start_dt = row_start_dt.replace(tzinfo=dt_util.UTC)
+        else:
+            row_start_dt = dt_util.as_utc(row_start_dt)
+
+        day_key = row_start_dt.date()
+        latest = daily_latest.get(day_key)
+        if latest is None or row_start_dt > latest[0]:
+            daily_latest[day_key] = (row_start_dt, sum_value)
+
+    aggregated_rows: list[StatisticsRow] = []
+    for _, (last_start, sum_value) in sorted(daily_latest.items()):
+        aggregated_rows.append({
+            "start": last_start.isoformat(),
+            "sum": sum_value,
+        })
+
+    return aggregated_rows
+
+
 async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
@@ -1721,17 +1771,6 @@ async def _collect_co2_statistics(
     statistic_ids = list(entity_map)
 
     instance = recorder.get_instance(hass)
-
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        "day",
-        None,
-        {"change", "sum"},
-    )
 
     metadata_requires_hass = _recorder_metadata_requires_hass()
     metadata: dict[str, tuple[int, StatisticMetaData]]
@@ -1778,14 +1817,8 @@ async def _collect_co2_statistics(
         else:
             raise
 
-    for entity_id in statistic_ids:
-        rows = stats_map.get(entity_id)
-        if not rows:
-            continue
-
-        total = Decimal("0")
-        has_sum = False
-        state_class: str | None = None
+    def resolve_state_class(entity_id: str) -> str | None:
+        state_class_value: str | None = None
 
         state_obj = hass.states.get(entity_id)
         if state_obj is not None:
@@ -1793,16 +1826,68 @@ async def _collect_co2_statistics(
             if not isinstance(state_class_attr, str):
                 state_class_attr = getattr(state_class_attr, "value", state_class_attr)
             if isinstance(state_class_attr, str):
-                state_class = state_class_attr
+                state_class_value = state_class_attr
 
-        if state_class is None:
+        if state_class_value is None:
             meta_entry = metadata.get(entity_id)
             if meta_entry:
                 state_class_obj = meta_entry[1].get("state_class")
                 if not isinstance(state_class_obj, str):
                     state_class_obj = getattr(state_class_obj, "value", state_class_obj)
                 if isinstance(state_class_obj, str):
-                    state_class = state_class_obj
+                    state_class_value = state_class_obj
+
+        return state_class_value
+
+    state_class_map: dict[str, str | None] = {
+        entity_id: resolve_state_class(entity_id) for entity_id in statistic_ids
+    }
+
+    hourly_ids = [
+        entity_id
+        for entity_id, state_class in state_class_map.items()
+        if state_class == "total"
+    ]
+
+    daily_ids = [entity_id for entity_id in statistic_ids if entity_id not in hourly_ids]
+
+    stats_map: dict[str, list[StatisticsRow]] = {}
+
+    if daily_ids:
+        daily_stats = await instance.async_add_executor_job(
+            recorder_statistics.statistics_during_period,
+            hass,
+            start,
+            end,
+            daily_ids,
+            "day",
+            None,
+            {"change", "sum"},
+        )
+        stats_map.update(daily_stats)
+
+    if hourly_ids:
+        hourly_stats = await instance.async_add_executor_job(
+            recorder_statistics.statistics_during_period,
+            hass,
+            start,
+            end,
+            hourly_ids,
+            "hour",
+            None,
+            {"change", "sum"},
+        )
+        for entity_id, rows in hourly_stats.items():
+            stats_map[entity_id] = _aggregate_hourly_statistics_to_daily(rows or [])
+
+    for entity_id in statistic_ids:
+        rows = stats_map.get(entity_id)
+        if not rows:
+            continue
+
+        total = Decimal("0")
+        has_sum = False
+        state_class = state_class_map.get(entity_id)
 
         daily_totals: dict[date, Decimal] | None = None
         if state_class == "total":
