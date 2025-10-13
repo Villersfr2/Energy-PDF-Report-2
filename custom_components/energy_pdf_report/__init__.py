@@ -1663,46 +1663,34 @@ def _sum_changes(rows: Iterable[StatisticsRow] | None) -> Decimal:
     return total
 
 
-def _sum_daily_totals(rows: Iterable[StatisticsRow]) -> Decimal | None:
-    """Additionner les totaux quotidiens d'un capteur `total`."""
-
-    daily_totals: dict[date, Decimal] = {}
-
-    for row in rows:
-        value = _decimal_from_value(row.get("sum"))
-        if value is None:
-            value = _decimal_from_value(row.get("change"))
-        if value is None:
-            continue
-
-        timestamp = row.get("end") or row.get("start")
-        if not isinstance(timestamp, datetime):
-            continue
-
-        day = dt_util.as_local(timestamp).date()
-        current_total = daily_totals.get(day, Decimal("0"))
-        daily_totals[day] = current_total + value
-
-    if not daily_totals:
-        return None
-
-    total = Decimal("0")
-    for value in daily_totals.values():
-        total += value
-
-    return total
-
-
-def _calculate_last_minus_first(rows: Iterable[StatisticsRow] | None) -> Decimal:
+def _calculate_last_minus_first(
+    rows: Iterable[StatisticsRow] | None,
+) -> Decimal | None:
     """Calculer la différence entre la dernière et la première valeur disponible."""
 
     first_value: Decimal | None = None
     last_value: Decimal | None = None
 
     if not rows:
-        return Decimal("0")
+        return None
 
-    for row in rows:
+    ordered_rows = list(rows)
+    if not ordered_rows:
+        return None
+
+    def _sort_key(row: StatisticsRow) -> float:
+        timestamp = row.get("start") or row.get("end")
+        if isinstance(timestamp, datetime):
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=dt_util.UTC)
+            else:
+                timestamp = dt_util.as_utc(timestamp)
+            return timestamp.timestamp()
+        return float("-inf")
+
+    ordered_rows.sort(key=_sort_key)
+
+    for row in ordered_rows:
         candidate = _decimal_from_value(row.get("sum"))
         if candidate is None:
             candidate = _decimal_from_value(row.get("state"))
@@ -1715,11 +1703,8 @@ def _calculate_last_minus_first(rows: Iterable[StatisticsRow] | None) -> Decimal
 
         last_value = candidate
 
-    if last_value is None:
-        return Decimal("0")
-
-    if first_value is None:
-        return last_value
+    if first_value is None or last_value is None:
+        return None
 
     return last_value - first_value
 
@@ -1802,6 +1787,49 @@ def _resolve_state_class_for_entity(
     return None
 
 
+def _sum_daily_max_values(
+    rows: Iterable[StatisticsRow] | None,
+    timezone: tzinfo,
+) -> Decimal | None:
+    """Additionner la valeur maximale `sum` pour chaque jour local."""
+
+    if not rows:
+        return None
+
+    daily_max: dict[date, Decimal] = {}
+
+    for row in rows:
+        sum_value = _decimal_from_value(row.get("sum"))
+        if sum_value is None:
+            sum_value = _decimal_from_value(row.get("state"))
+
+        if sum_value is None:
+            continue
+
+        timestamp = row.get("start") or row.get("end")
+        if not isinstance(timestamp, datetime):
+            continue
+
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=dt_util.UTC)
+
+        local_dt = timestamp.astimezone(timezone)
+        local_day = local_dt.date()
+
+        current_max = daily_max.get(local_day)
+        if current_max is None or sum_value > current_max:
+            daily_max[local_day] = sum_value
+
+    if not daily_max:
+        return None
+
+    total = Decimal("0")
+    for value in daily_max.values():
+        total += value
+
+    return total
+
+
 async def _collect_total_state_values(
     hass: HomeAssistant,
     instance: Any,
@@ -1809,12 +1837,17 @@ async def _collect_total_state_values(
     rows: list[StatisticsRow],
     start: datetime,
     end: datetime,
+    timezone: tzinfo,
 ) -> Decimal:
     """Calculer la somme totale pour un capteur avec `state_class = total`."""
 
-    daily_total = _sum_daily_totals(rows)
-    if daily_total is not None:
-        return daily_total
+    daily_max_total = _sum_daily_max_values(rows, timezone)
+    if daily_max_total is not None:
+        return daily_max_total
+
+    difference = _calculate_last_minus_first(rows)
+    if difference is not None:
+        return difference
 
     period_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
@@ -1828,7 +1861,15 @@ async def _collect_total_state_values(
     )
 
     period_rows = period_map.get(entity_id) if period_map else None
-    return _calculate_last_minus_first(period_rows)
+    fallback_daily_max = _sum_daily_max_values(period_rows, timezone)
+    if fallback_daily_max is not None:
+        return fallback_daily_max
+
+    fallback_difference = _calculate_last_minus_first(period_rows)
+    if fallback_difference is not None:
+        return fallback_difference
+
+    return Decimal("0")
 
 
 async def _collect_totals_for_sensors(
@@ -1870,6 +1911,8 @@ async def _collect_totals_for_sensors(
         hass, instance, set(statistic_ids)
     )
 
+    timezone = _select_timezone(hass)
+
     for entity_id, definition in entity_map.items():
         rows = stats_map.get(entity_id) or []
         rows_list = list(rows) if rows else []
@@ -1883,6 +1926,7 @@ async def _collect_totals_for_sensors(
                 rows_list,
                 start,
                 end,
+                timezone,
             )
         else:
             total = _sum_changes(rows_list)
