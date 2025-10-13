@@ -1768,27 +1768,15 @@ async def _collect_co2_statistics(
         return results
 
     entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
+    statistic_ids = list(entity_map.keys())
 
     instance = recorder.get_instance(hass)
 
     metadata_requires_hass = _recorder_metadata_requires_hass()
     metadata: dict[str, tuple[int, StatisticMetaData]]
 
-    try:
-        if metadata_requires_hass:
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                set(statistic_ids),
-            )
-        else:
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                set(statistic_ids),
-            )
-    except TypeError as err:
-        err_message = str(err)
+    hourly_ids = [eid for eid, sc in state_class_map.items() if sc == "total"]
+    daily_ids = [eid for eid in statistic_ids if eid not in hourly_ids]
 
         if metadata_requires_hass and _metadata_error_indicates_legacy_signature(
             err_message
@@ -1895,56 +1883,52 @@ async def _collect_co2_statistics(
         if state_class == "total":
             daily_totals = {}
 
+        for entity_id, rows in hourly_stats.items():
+            if not rows:
+                continue
+
+            # Grouper par jour et prendre max(sum)
+            daily_values: dict[date, Decimal] = {}
+            for row in rows:
+                s = _normalize_statistic_value(row.get("sum"))
+                if s is None:
+                    continue
+
+                row_start = row.get("start")
+                dt = dt_util.parse_datetime(row_start) if isinstance(row_start, str) else row_start
+                if dt is None:
+                    continue
+
+                dt = dt_util.as_utc(dt)
+                day_key = dt.date()
+                if day_key not in daily_values or s > daily_values[day_key]:
+                    daily_values[day_key] = s
+
+            # Convertir en rows journalières synthétiques
+            aggregated_rows = [
+                {"start": datetime.combine(day, datetime.min.time()).isoformat(), "sum": val}
+                for day, val in daily_values.items()
+            ]
+            stats_map[entity_id] = aggregated_rows
+
+    # --- Addition finale ---
+    for entity_id, definition in entity_map.items():
+        rows = stats_map.get(entity_id)
+        if not rows:
+            continue
+
+        total = Decimal("0")
         for row in rows:
             if not _row_starts_before(row, end):
                 continue
+            s = _normalize_statistic_value(row.get("sum"))
+            if s is not None:
+                total += s
 
-            if state_class == "total":
-                sum_value = _normalize_statistic_value(row.get("sum"))
-                if sum_value is None:
-                    continue
-
-                row_start: Any = getattr(row, "start", None)
-                if row_start is None and isinstance(row, Mapping):
-                    row_start = row.get("start")
-
-                if isinstance(row_start, str):
-                    row_start_dt = dt_util.parse_datetime(row_start)
-                elif isinstance(row_start, datetime):
-                    row_start_dt = row_start
-                else:
-                    row_start_dt = None
-
-                if row_start_dt is None:
-                    continue
-
-                if row_start_dt.tzinfo is None:
-                    row_start_dt = row_start_dt.replace(tzinfo=dt_util.UTC)
-                else:
-                    row_start_dt = dt_util.as_utc(row_start_dt)
-
-                day_key = row_start_dt.date()
-                existing = daily_totals.get(day_key)
-                if existing is None or sum_value > existing:
-                    daily_totals[day_key] = sum_value
-                has_sum = True
-                continue
-
-            contribution = _select_counter_total(row)
-            if contribution is None:
-                continue
-            has_sum = True
-            total += contribution
-
-        if state_class == "total" and daily_totals:
-            total = sum(daily_totals.values(), Decimal("0"))
-            has_sum = True
-
-        if has_sum:
-            definition = entity_map[entity_id]
-            results[definition.translation_key] = total
+        results[definition.translation_key] = total
 
     return results
+
 
 
 async def _collect_price_statistics(
