@@ -1517,13 +1517,21 @@ def _row_starts_before(
     """Vérifier que la ligne appartient bien à la période exclusive."""
 
     start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
-    if start_dt is None:
-        start_dt = _parse_row_datetime(_row_value(row, "end"), timezone)
+    if start_dt is not None and start_dt >= end:
+        return False
 
-    if start_dt is None:
-        return True
+    # Certaines lignes (notamment celles provenant de recorder) peuvent ne pas
+    # fournir de champ ``start`` fiable mais exposent une borne ``end``. Dans ce
+    # cas on s'assure que cette borne reste strictement avant la fin exclusive
+    # demandée afin d'éviter d'inclure la journée suivante.
+    end_dt = _parse_row_datetime(_row_value(row, "end"), timezone)
+    if end_dt is not None and end_dt > end:
+        return False
 
-    return start_dt < end
+    # Si aucune information n'est disponible, on conserve la ligne pour ne pas
+    # perdre d'échantillon. Les appels en aval re-filtreront éventuellement les
+    # valeurs manquantes.
+    return True
 
 
 def _filter_statistics_map_by_end(
