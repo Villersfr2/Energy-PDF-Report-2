@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import calendar
-
 import inspect
 import logging
 import secrets
@@ -603,7 +601,22 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     period = str(period_value)
     call_data[CONF_PERIOD] = period
 
-    start, end, display_start, display_end, bucket = _resolve_period(hass, call_data)
+    timezone = _select_timezone(hass)
+
+    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
+    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
+
+    start_hint = _localize_date(start_date, timezone) if start_date else None
+    end_hint = _localize_date(end_date, timezone) if end_date else None
+
+    start, end = _resolve_period(period, start_hint, end_hint)
+
+    start_local = start.astimezone(timezone)
+    end_local_exclusive = end.astimezone(timezone)
+
+    display_start = start_local
+    display_end = end_local_exclusive - timedelta(seconds=1)
+    bucket = _select_bucket(period, start_local, end_local_exclusive)
 
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
@@ -1193,60 +1206,61 @@ def _format_dashboard_label(selection: DashboardSelection) -> str | None:
 
 
 def _resolve_period(
-    hass: HomeAssistant, call_data: dict[str, Any]
-) -> tuple[datetime, datetime, datetime, datetime, str]:
-    """Calculer les dates de début et fin en tenant compte de la granularité."""
+    period: str | None,
+    period_start: datetime | None,
+    period_end: datetime | None,
+) -> tuple[datetime, datetime]:
+    """Normaliser la période demandée en bornes UTC exclusives.
 
-    period: str = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
-    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
-    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
+    Les dates personnalisées et les périodes prédéfinies utilisent la même logique :
+    on travaille toujours sur des journées complètes en local puis on convertit en UTC
+    avec une borne de fin exclusive, ce qui évite toute double inclusion d'une journée.
+    """
 
+    # Cas 1 – l'utilisateur a fourni explicitement une période personnalisée.
+    if period_start is not None or period_end is not None:
+        # Reprendre les bornes fournies (ou déduites) et les normaliser sur minuit local.
+        reference_start = period_start or period_end
+        reference_end = period_end or period_start
+
+        if reference_start is None or reference_end is None:
+            raise HomeAssistantError("La période personnalisée est incomplète.")
+
+        start_local = dt_util.start_of_local_day(reference_start)
+        end_local = dt_util.start_of_local_day(reference_end)
+        end_local_exclusive = end_local + timedelta(days=1)
+
+        if end_local_exclusive <= start_local:
+            raise HomeAssistantError(
+                "La date de fin doit être postérieure à la date de début."
+            )
+
+        return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
+
+    # Cas 2 – période relative (day/week/month) basée sur la date actuelle.
+    normalized = (period or DEFAULT_PERIOD).lower()
     now_local = dt_util.now()
+    today_start = dt_util.start_of_local_day(now_local)
 
-    if start_date is None:
-        if period == "day":
-            start_date = now_local.date()
-        elif period == "week":
-            start_date = (now_local - timedelta(days=now_local.weekday())).date()
-        elif period == "month":
-            start_date = now_local.replace(day=1).date()
-        else:
-            raise HomeAssistantError("Période non supportée")
+    if normalized == "day":
+        # Journée précédente complète.
+        end_local_exclusive = today_start
+        start_local = end_local_exclusive - timedelta(days=1)
+    elif normalized == "week":
+        # Semaine précédente complète (lundi → dimanche).
+        current_week_start = today_start - timedelta(days=today_start.weekday())
+        end_local_exclusive = current_week_start
+        start_local = end_local_exclusive - timedelta(days=7)
+    elif normalized == "month":
+        # Mois précédent complet.
+        current_month_start = today_start.replace(day=1)
+        end_local_exclusive = current_month_start
+        previous_month_last_day = end_local_exclusive - timedelta(days=1)
+        start_local = previous_month_last_day.replace(day=1)
+    else:
+        raise HomeAssistantError("Période non supportée")
 
-    if end_date is None:
-        if period == "day":
-            end_date = start_date
-        elif period == "week":
-            end_date = start_date + timedelta(days=6)
-        elif period == "month":
-            _, last_day = calendar.monthrange(start_date.year, start_date.month)
-            end_date = start_date.replace(day=last_day)
-    if end_date is None:
-        end_date = start_date
-
-    if end_date < start_date:
-        raise HomeAssistantError("La date de fin doit être postérieure à la date de début.")
-
-    timezone = _select_timezone(hass)
-
-    start_local = _localize_date(start_date, timezone)
-
-    # ``end_date`` reste inclusif comme dans le tableau de bord Énergie ;
-    # recorder se charge ensuite de convertir ce point de sortie en borne exclusive.
-    end_local = _localize_date(end_date, timezone)
-    end_local_exclusive = end_local + timedelta(days=1)
-
-    start_utc = dt_util.as_utc(start_local)
-    end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
-    display_end = end_local_exclusive - timedelta(seconds=1)
-
-    return (
-        start_utc,
-        end_utc,
-        start_local,
-        display_end,
-        _select_bucket(period, start_local, end_local_exclusive),
-    )
+    return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
 
 
 
