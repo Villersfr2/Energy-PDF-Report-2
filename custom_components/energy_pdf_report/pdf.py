@@ -5,7 +5,6 @@ import zlib
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -614,31 +613,9 @@ def _format_number(value: float) -> str:
         formatted = f"{value:,.0f}"
     elif magnitude >= 100:
         formatted = f"{value:,.1f}"
-    elif magnitude >= 1:
-        formatted = f"{value:,.2f}"
     else:
-        formatted = _format_small_number(value)
+        formatted = f"{value:,.2f}"
     return formatted.replace(",", " ")
-
-
-def _format_small_number(value: float) -> str:
-    """Conserver la précision des petites valeurs sans les arrondir."""
-
-    try:
-        decimal_value = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        decimal_value = Decimal(value)
-
-    normalized = decimal_value.normalize()
-    formatted = format(normalized, "f")
-
-    if "." in formatted:
-        formatted = formatted.rstrip("0").rstrip(".")
-
-    if not formatted or formatted in {"-0", "-0.0"}:
-        return "0"
-
-    return formatted
 
 
 
