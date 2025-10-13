@@ -211,6 +211,8 @@ class EnergyPDFBuilder:
         self._pdf = EnergyReportPDF(title, period_label, generated_at, translations)
         self._pdf.set_auto_page_break(auto=True, margin=18)
         self._pdf.alias_nb_pages()
+        # Enregistre dynamiquement les polices Unicode afin de supporter toutes
+        # les langues sans exiger d'installation préalable sur le système hôte.
         self._font_cache = _register_unicode_fonts(self._pdf)
 
         self._logo_path = self._validate_logo(logo_path)
@@ -266,6 +268,9 @@ class EnergyPDFBuilder:
 
         self._pdf.set_font(FONT_FAMILY, "", 11)
         for line in details:
+            # Chaque ligne du tableau "details" représente une information clé
+            # (période, granularité, nombre de statistiques...) affichée sous le
+            # titre principal de la page de garde.
             self._pdf.cell(0, 8, line, align="C", ln=True)
 
         self._pdf.set_auto_page_break(auto=previous_break, margin=previous_margin)
@@ -341,11 +346,14 @@ class EnergyPDFBuilder:
             str_row = ["" if value is None else str(value) for value in row]
             if decorate_first_column and str_row:
                 str_row[0] = _decorate_category(str_row[0])
+            # Alterne la couleur de fond pour améliorer la lisibilité des lignes.
             fill_color = ZEBRA_COLORS[index % 2]
             text_color = self._default_text_color
             font_style = ""
 
             if index in emphasize:
+                # Les lignes mises en avant (total, sous-total) reçoivent une
+                # couleur et une police spécifiques pour attirer l'œil.
                 fill_color = TOTAL_FILL_COLOR
                 text_color = TOTAL_TEXT_COLOR
                 font_style = "B"

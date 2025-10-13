@@ -237,11 +237,15 @@ def _resolve_base_url(hass: HomeAssistant) -> str | None:
 
     if async_get_url is not None:
         try:
+            # Prefer the helper provided by Home Assistant because it already
+            # takes into account user configuration and reverse proxy rules.
             base_url = async_get_url(hass)
         except HomeAssistantError:
             base_url = None
 
     if not base_url:
+        # Fall back to the configured external/internal URLs.  We iterate so we
+        # can gracefully accept whichever option the user has defined.
         for candidate in (
             getattr(hass.config, "external_url", None),
             getattr(hass.config, "internal_url", None),
@@ -251,6 +255,8 @@ def _resolve_base_url(hass: HomeAssistant) -> str | None:
                 break
 
     if not base_url:
+        # As a last resort, inspect the API object (older HA versions) to
+        # recover a base URL exposed by the HTTP server.
         api = getattr(hass.config, "api", None)
         if api is not None:
             base_url = getattr(api, "base_url", None) or getattr(api, "server_url", None)
@@ -272,6 +278,7 @@ async def _async_resolve_download_url(
     pdf_path_str = str(pdf_path)
 
     if pdf_path_str.startswith(("http://", "https://")):
+        # The caller already produced an absolute URL, return it untouched.
         return pdf_path_str
 
     base_url = _resolve_base_url(hass)
@@ -283,6 +290,8 @@ async def _async_resolve_download_url(
 
     path_obj = Path(pdf_path_str)
     if not path_obj.is_absolute():
+        # Relative paths are resolved from the Home Assistant configuration
+        # directory, matching how the supervisor exposes the filesystem.
         path_obj = Path(hass.config.path(str(path_obj)))
 
     try:
@@ -299,6 +308,8 @@ async def _async_resolve_download_url(
     try:
         relative_path = resolved_path.relative_to(resolved_www)
     except ValueError:
+        # If the file is outside of the www/ directory, there is no public URL
+        # exposed by Home Assistant; the caller must use the filesystem path.
         relative_path = None
 
     if relative_path is None:
@@ -570,6 +581,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
 
     dashboard_requested: str | None = call.data.get(CONF_DASHBOARD)
+    # Sélectionne le tableau de bord configuré ou le tableau par défaut pour
+    # récupérer la liste des statistiques Energy Dashboard à inclure.
     selection = await _async_select_dashboard_preferences(
         hass, manager, dashboard_requested
     )
@@ -622,6 +635,9 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                     "Mode comparaison désactivé: la date de fin de comparaison doit être postérieure à la date de début."
                 )
             else:
+                # Les périodes de comparaison sont converties en fuseau local
+                # puis en UTC, afin de respecter la logique de calcul de
+                # recorder et d'éviter d'inclure le jour suivant.
                 compare_start_local = _localize_date(compare_start_date, timezone)
                 compare_end_local = _localize_date(compare_end_date, timezone)
                 compare_end_exclusive = compare_end_local + timedelta(days=1)
@@ -646,6 +662,9 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         option_price_enabled if price_override is None else bool(price_override)
     )
 
+    # Construction de la liste des statistiques à collecter avant de lancer
+    # toute requête vers recorder. Les métriques reflètent les cartes actives
+    # du tableau de bord énergie.
     metrics = _build_metrics(preferences, co2_enabled, price_enabled)
     cost_mapping = _build_cost_mapping(preferences)
 
@@ -655,6 +674,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             "Aucune statistique n'a été trouvée dans les préférences énergie."
         )
 
+    # Collecte principale des séries statistiques dans le fuseau et la granularité
+    # déterminés par _resolve_period.
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket, timezone
     )
@@ -729,6 +750,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             timezone,
         )
 
+    # Construction du chemin de sortie final. On accepte un dossier relatif et
+    # on le convertit vers un chemin absolu accessible par Home Assistant.
     output_dir_input = call.data.get(
         CONF_OUTPUT_DIR, options.get(CONF_OUTPUT_DIR, DEFAULT_OUTPUT_DIR)
     )
@@ -1582,6 +1605,9 @@ def _sum_daily_totals(
         local_day = start_dt.astimezone(timezone).date()
         total_value = _extract_row_total(row)
         if total_value is not None:
+            # Lorsque recorder fournit un champ "sum" ou "state", on utilise le
+            # maximum journalier. Cela correspond à la logique du tableau de bord
+            # énergie qui affiche les totaux cumulés par jour.
             current = daily_max.get(local_day)
             if current is None or total_value > current:
                 daily_max[local_day] = total_value
@@ -1596,6 +1622,8 @@ def _sum_daily_totals(
         except (TypeError, ValueError):
             continue
 
+        # Certaines entités ne fournissent que des changements par pas; on les
+        # additionne par journée locale pour retomber sur un total quotidien.
         daily_changes[local_day] += change_total
 
     combined_days = set(daily_max) | set(daily_changes)
@@ -1626,6 +1654,8 @@ async def _collect_totals_for_sensors(
 
     statistic_ids = [definition.entity_id for definition in definitions]
 
+    # Les totaux sont toujours récupérés avec une granularité quotidienne car
+    # les prix/CO₂ sont exprimés par jour dans le PDF.
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
@@ -1662,6 +1692,8 @@ async def _collect_totals_for_sensors(
         total = sum(
             value for day, value in daily_max_sums.items() if day <= last_local_day
         )
+        # On stocke le total converti dans la clé de traduction, ce qui permet de
+        # réutiliser directement la structure dans pdf.py.
         results[definition.translation_key] = total
 
     return results
@@ -1740,6 +1772,8 @@ async def _collect_statistics(
     )
 
     if stats_map is not None:
+        # Lorsque le gestionnaire énergie répond, on filtre les points hors de
+        # la période demandée (surtout important pour la granularité "day").
         stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
 
     try:
@@ -1823,9 +1857,13 @@ async def _collect_statistics(
                     friendly_name = str(registry_name).strip()
 
         if friendly_name:
+            # Enrichit les métadonnées pour afficher un libellé lisible dans le
+            # PDF. On écrit directement dans le dictionnaire retourné par recorder.
             meta["name"] = friendly_name
 
     if stats_map is None:
+        # Fallback vers recorder lorsque le gestionnaire énergie ne connaît pas
+        # certaines statistiques (ex. entités personnalisées).
         stats_map = await instance.async_add_executor_job(
             recorder_statistics.statistics_during_period,
             hass,
@@ -1840,6 +1878,8 @@ async def _collect_statistics(
     if stats_map is None:
         stats_map = {}
     else:
+        # Même filtre que plus haut pour s'assurer que la dernière journée
+        # exclusive n'est pas incluse.
         stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
 
     return StatisticsResult(stats_map, metadata)
@@ -2048,8 +2088,10 @@ def _build_pdf(
     price_definitions = tuple(price_definitions)
 
     cover_details = [
-
         translations.cover_period.format(period=period_label),
+        # Mention explicite de la granularité des statistiques (jour, heure...).
+        # Cette information reflète directement la valeur "bucket" calculée par
+        # _resolve_period et aide à comprendre comment les données ont été agrégées.
         translations.cover_bucket.format(bucket=bucket_label),
         translations.cover_stats.format(count=len(metrics)),
         translations.cover_generated.format(
