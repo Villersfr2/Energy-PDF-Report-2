@@ -12,6 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, tzinfo
 
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 from urllib.parse import quote, urljoin
@@ -97,6 +98,8 @@ from .translations import ReportTranslations, get_report_translations
 
 if TYPE_CHECKING:
     from homeassistant.components.energy.data import EnergyPreferences
+
+ATTR_STATE_CLASS = "state_class"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -702,7 +705,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     if price_enabled:
         price_definitions = _build_price_sensor_definitions(options)
 
-    co2_totals: dict[str, float] = {}
+    co2_totals: dict[str, Decimal] = {}
     if co2_definitions:
         co2_totals = await _collect_co2_statistics(
             hass,
@@ -711,7 +714,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             co2_definitions,
         )
 
-    price_totals: dict[str, float] = {}
+    price_totals: dict[str, Decimal] = {}
     if price_definitions:
         price_totals = await _collect_price_statistics(
             hass,
@@ -1609,17 +1612,211 @@ async def _collect_statistics(
     return StatisticsResult(stats_map, metadata)
 
 
-async def _collect_co2_statistics(
+def _decimal_from_value(value: Any) -> Decimal | None:
+    """Convertir une valeur quelconque en Decimal si possible."""
+
+    if value is None:
+        return None
+
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _sum_changes(rows: Iterable[StatisticsRow] | None) -> Decimal:
+    """Additionner les variations journalières d'un capteur cumulatif."""
+
+    total = Decimal("0")
+
+    if not rows:
+        return total
+
+    for row in rows:
+        change_value = _decimal_from_value(row.get("change"))
+        if change_value is None:
+            continue
+        total += change_value
+
+    return total
+
+
+def _sum_daily_totals(rows: Iterable[StatisticsRow]) -> Decimal | None:
+    """Additionner les dernières valeurs quotidiennes d'un capteur `total`."""
+
+    daily_totals: dict[date, Decimal] = {}
+
+    for row in rows:
+        sum_value = _decimal_from_value(row.get("sum"))
+        if sum_value is None:
+            continue
+
+        timestamp = row.get("end") or row.get("start")
+        if not isinstance(timestamp, datetime):
+            continue
+
+        day = dt_util.as_local(timestamp).date()
+        daily_totals[day] = sum_value
+
+    if not daily_totals:
+        return None
+
+    total = Decimal("0")
+    for value in daily_totals.values():
+        total += value
+
+    return total
+
+
+def _calculate_last_minus_first(rows: Iterable[StatisticsRow] | None) -> Decimal:
+    """Calculer la différence entre la dernière et la première valeur disponible."""
+
+    first_value: Decimal | None = None
+    last_value: Decimal | None = None
+
+    if not rows:
+        return Decimal("0")
+
+    for row in rows:
+        candidate = _decimal_from_value(row.get("sum"))
+        if candidate is None:
+            candidate = _decimal_from_value(row.get("state"))
+
+        if candidate is None:
+            continue
+
+        if first_value is None:
+            first_value = candidate
+
+        last_value = candidate
+
+    if last_value is None:
+        return Decimal("0")
+
+    if first_value is None:
+        return last_value
+
+    return last_value - first_value
+
+
+async def _async_fetch_statistics_metadata(
+    hass: HomeAssistant,
+    instance: Any,
+    statistic_ids: set[str],
+) -> dict[str, tuple[int, StatisticMetaData]]:
+    """Récupérer les métadonnées recorder pour les entités concernées."""
+
+    if not statistic_ids:
+        return {}
+
+    metadata_requires_hass = _recorder_metadata_requires_hass()
+
+    try:
+        if metadata_requires_hass:
+            metadata = await instance.async_add_executor_job(
+                _get_recorder_metadata_with_hass,
+                hass,
+                statistic_ids,
+            )
+        else:
+            metadata = await instance.async_add_executor_job(
+                recorder_statistics.get_metadata,
+                statistic_ids,
+            )
+    except TypeError as err:
+        err_message = str(err)
+
+        if metadata_requires_hass and _metadata_error_indicates_legacy_signature(
+            err_message
+        ):
+            _set_recorder_metadata_requires_hass(False)
+            metadata = await instance.async_add_executor_job(
+                recorder_statistics.get_metadata,
+                statistic_ids,
+            )
+        elif (
+            not metadata_requires_hass
+            and _metadata_error_indicates_requires_hass(err_message)
+        ):
+            _set_recorder_metadata_requires_hass(True)
+            metadata = await instance.async_add_executor_job(
+                _get_recorder_metadata_with_hass,
+                hass,
+                statistic_ids,
+            )
+        else:
+            raise
+
+    return metadata
+
+
+def _resolve_state_class_for_entity(
+    hass: HomeAssistant,
+    metadata: Mapping[str, tuple[int, StatisticMetaData]],
+    entity_id: str,
+) -> str | None:
+    """Déterminer le state_class d'une entité via recorder ou l'état courant."""
+
+    entry = metadata.get(entity_id)
+    if entry:
+        meta = entry[1]
+        state_class = meta.get("state_class")
+        if state_class:
+            return str(state_class)
+
+        original_state_class = meta.get("original_state_class")
+        if original_state_class:
+            return str(original_state_class)
+
+    state = hass.states.get(entity_id)
+    if state:
+        attribute_state_class = state.attributes.get(ATTR_STATE_CLASS)
+        if attribute_state_class:
+            return str(attribute_state_class)
+
+    return None
+
+
+async def _collect_total_state_values(
+    hass: HomeAssistant,
+    instance: Any,
+    entity_id: str,
+    rows: list[StatisticsRow],
+    start: datetime,
+    end: datetime,
+) -> Decimal:
+    """Calculer la somme totale pour un capteur avec `state_class = total`."""
+
+    daily_total = _sum_daily_totals(rows)
+    if daily_total is not None:
+        return daily_total
+
+    period_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        [entity_id],
+        None,
+        None,
+        {"sum", "state"},
+    )
+
+    period_rows = period_map.get(entity_id) if period_map else None
+    return _calculate_last_minus_first(period_rows)
+
+
+async def _collect_totals_for_sensors(
     hass: HomeAssistant,
     start: datetime,
     end: datetime,
-    sensors: Iterable[CO2SensorDefinition],
-) -> dict[str, float]:
-    """Assembler les totaux CO₂ sur la période demandée."""
+    sensors: Iterable[CO2SensorDefinition | PriceSensorDefinition],
+) -> dict[str, Decimal]:
+    """Rassembler les totaux pour les capteurs financiers ou CO₂."""
 
     definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
+    results: dict[str, Decimal] = {
+        definition.translation_key: Decimal("0") for definition in definitions
     }
 
     if not definitions:
@@ -1638,28 +1835,42 @@ async def _collect_co2_statistics(
         statistic_ids,
         "day",
         None,
-        {"change"},
+        {"change", "sum", "state"},
     )
 
-    for entity_id in statistic_ids:
-        rows = stats_map.get(entity_id)
-        if not rows:
-            continue
+    if stats_map is None:
+        stats_map = {}
 
-        total = 0.0
-        has_sum = False
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_sum = True
-            total += float(change_value)
+    metadata = await _async_fetch_statistics_metadata(
+        hass, instance, set(statistic_ids)
+    )
 
-        if has_sum:
-            definition = entity_map[entity_id]
-            results[definition.translation_key] = total
+    for entity_id, definition in entity_map.items():
+        rows = stats_map.get(entity_id) or []
+        rows_list = list(rows) if rows else []
+        state_class = _resolve_state_class_for_entity(hass, metadata, entity_id)
+
+        if state_class == "total":
+            total = await _collect_total_state_values(
+                hass, instance, entity_id, rows_list, start, end
+            )
+        else:
+            total = _sum_changes(rows_list)
+
+        results[definition.translation_key] = total
 
     return results
+
+
+async def _collect_co2_statistics(
+    hass: HomeAssistant,
+    start: datetime,
+    end: datetime,
+    sensors: Iterable[CO2SensorDefinition],
+) -> dict[str, Decimal]:
+    """Assembler les totaux CO₂ sur la période demandée."""
+
+    return await _collect_totals_for_sensors(hass, start, end, sensors)
 
 
 async def _collect_price_statistics(
@@ -1667,52 +1878,10 @@ async def _collect_price_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[PriceSensorDefinition],
-) -> dict[str, float]:
+) -> dict[str, Decimal]:
     """Assembler les totaux financiers sur la période demandée."""
 
-    definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
-    }
-
-    if not definitions:
-        return results
-
-    entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
-
-    instance = recorder.get_instance(hass)
-
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        "day",
-        None,
-        {"change"},
-    )
-
-    for entity_id in statistic_ids:
-        rows = stats_map.get(entity_id)
-        if not rows:
-            continue
-
-        total = 0.0
-        has_sum = False
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_sum = True
-            total += float(change_value)
-
-        if has_sum:
-            definition = entity_map[entity_id]
-            results[definition.translation_key] = total
-
-    return results
+    return await _collect_totals_for_sensors(hass, start, end, sensors)
 
 
 def _get_recorder_metadata_with_hass(
@@ -1823,10 +1992,10 @@ def _build_pdf(
     translations: ReportTranslations,
 
     co2_definitions: Iterable[CO2SensorDefinition],
-    co2_totals: dict[str, float],
+    co2_totals: dict[str, Decimal],
 
     price_definitions: Iterable[PriceSensorDefinition],
-    price_totals: dict[str, float],
+    price_totals: dict[str, Decimal],
 
     advice_text: str,
     conclusion_summary: ConclusionSummary | None = None,
@@ -2005,11 +2174,13 @@ def _build_pdf(
         builder.add_paragraph(translations.price_section_intro)
 
         price_rows: list[tuple[str, str, str]] = []
-        expenses_total = 0.0
-        income_total = 0.0
+        expenses_total = Decimal("0")
+        income_total = Decimal("0")
 
         for definition in price_definitions:
-            value = price_totals_map.get(definition.translation_key, 0.0)
+            value = price_totals_map.get(
+                definition.translation_key, Decimal("0")
+            )
             label = translations.price_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -2048,8 +2219,8 @@ def _build_pdf(
 
     totals_map = co2_totals or {}
     co2_rows: list[tuple[str, str, str]] = []
-    emissions_total = 0.0
-    savings_total = 0.0
+    emissions_total = Decimal("0")
+    savings_total = Decimal("0")
 
 
     if co2_definitions:
@@ -2057,11 +2228,13 @@ def _build_pdf(
         builder.add_paragraph(translations.co2_section_intro)
 
         co2_rows: list[tuple[str, str, str]] = []
-        emissions_total = 0.0
-        savings_total = 0.0
+        emissions_total = Decimal("0")
+        savings_total = Decimal("0")
 
         for definition in co2_definitions:
-            value = totals_map.get(definition.translation_key, 0.0)
+            value = totals_map.get(
+                definition.translation_key, Decimal("0")
+            )
             label = translations.co2_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -2658,30 +2831,32 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _format_number(value: float) -> str:
+def _format_number(value: float | Decimal) -> str:
     """Formater une valeur numérique de manière lisible."""
 
-    if abs(value) < 0.0005:
-        value = 0.0
+    numeric = float(value)
 
-    if abs(value) >= 1000:
-        formatted = f"{value:,.0f}"
-    elif abs(value) >= 10:
-        formatted = f"{value:,.1f}"
+    if abs(numeric) < 0.0005:
+        numeric = 0.0
+
+    if abs(numeric) >= 1000:
+        formatted = f"{numeric:,.0f}"
+    elif abs(numeric) >= 10:
+        formatted = f"{numeric:,.1f}"
     else:
-        formatted = f"{value:,.3f}"
+        formatted = f"{numeric:,.3f}"
 
     return formatted.replace(",", " ")
 
 
-def _format_with_unit(value: float, unit: str | None) -> str:
+def _format_with_unit(value: float | Decimal, unit: str | None) -> str:
     """Associer un formatage numérique avec une unité si disponible."""
 
     formatted = _format_number(value)
     return f"{formatted} {unit}".strip() if unit else formatted
 
 
-def _format_signed_number(value: float) -> str:
+def _format_signed_number(value: float | Decimal) -> str:
     """Formater un nombre en ajoutant explicitement le signe positif."""
 
     formatted = _format_number(value)
