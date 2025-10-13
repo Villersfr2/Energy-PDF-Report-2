@@ -1872,6 +1872,23 @@ async def _collect_total_state_values(
     return Decimal("0")
 
 
+def _calculate_total_increasing_period_end(
+    end: datetime,
+    timezone: tzinfo,
+) -> datetime:
+    """Aligner la borne de fin exclusive sur le minuit local du jour suivant."""
+
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=dt_util.UTC)
+
+    local_end_exclusive = end.astimezone(timezone)
+    last_day_local = local_end_exclusive.date() - timedelta(days=1)
+    next_day_local = last_day_local + timedelta(days=1)
+    local_midnight_next_day = _localize_date(next_day_local, timezone)
+
+    return dt_util.as_utc(local_midnight_next_day)
+
+
 async def _collect_totals_for_sensors(
     hass: HomeAssistant,
     start: datetime,
@@ -1893,32 +1910,62 @@ async def _collect_totals_for_sensors(
 
     instance = recorder.get_instance(hass)
 
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        "day",
-        None,
-        {"change", "sum", "state"},
-    )
-
-    if stats_map is None:
-        stats_map = {}
-
     metadata = await _async_fetch_statistics_metadata(
         hass, instance, set(statistic_ids)
     )
 
     timezone = _select_timezone(hass)
 
-    for entity_id, definition in entity_map.items():
-        rows = stats_map.get(entity_id) or []
-        rows_list = list(rows) if rows else []
+    state_class_map: dict[str, str | None] = {}
+    total_increasing_ids: list[str] = []
+    standard_ids: list[str] = []
+
+    for entity_id in statistic_ids:
         state_class = _resolve_state_class_for_entity(hass, metadata, entity_id)
+        state_class_map[entity_id] = state_class
+
+        if state_class == "total_increasing":
+            total_increasing_ids.append(entity_id)
+        else:
+            standard_ids.append(entity_id)
+
+    stats_map: dict[str, list[StatisticsRow]] = {}
+    if standard_ids:
+        stats_map = await instance.async_add_executor_job(
+            recorder_statistics.statistics_during_period,
+            hass,
+            start,
+            end,
+            standard_ids,
+            "day",
+            None,
+            {"change", "sum", "state"},
+        )
+        if stats_map is None:
+            stats_map = {}
+
+    total_increasing_map: dict[str, list[StatisticsRow]] = {}
+    if total_increasing_ids:
+        total_increasing_end = _calculate_total_increasing_period_end(end, timezone)
+        total_increasing_map = await instance.async_add_executor_job(
+            recorder_statistics.statistics_during_period,
+            hass,
+            start,
+            total_increasing_end,
+            total_increasing_ids,
+            "day",
+            None,
+            {"change", "sum", "state"},
+        )
+        if total_increasing_map is None:
+            total_increasing_map = {}
+
+    for entity_id, definition in entity_map.items():
+        state_class = state_class_map.get(entity_id)
 
         if state_class == "total":
+            rows = stats_map.get(entity_id) or []
+            rows_list = list(rows) if rows else []
             total = await _collect_total_state_values(
                 hass,
                 instance,
@@ -1928,7 +1975,15 @@ async def _collect_totals_for_sensors(
                 end,
                 timezone,
             )
+        elif state_class == "total_increasing":
+            rows = total_increasing_map.get(entity_id)
+            if rows is None:
+                rows = stats_map.get(entity_id) or []
+            rows_list = list(rows) if rows else []
+            total = _sum_changes(rows_list)
         else:
+            rows = stats_map.get(entity_id) or []
+            rows_list = list(rows) if rows else []
             total = _sum_changes(rows_list)
 
         results[definition.translation_key] = total
