@@ -23,7 +23,15 @@ from homeassistant.components import persistent_notification, recorder
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder.statistics import StatisticsRow
-from homeassistant.const import ATTR_STATE_CLASS, CONF_FILENAME
+
+try:  # pragma: no cover - compat shim across HA versions
+    from homeassistant.const import ATTR_STATE_CLASS as _HA_ATTR_STATE_CLASS, CONF_FILENAME
+except ImportError:  # pragma: no cover - ATTR_STATE_CLASS removed in newer HA
+    from homeassistant.const import CONF_FILENAME
+
+    ATTR_STATE_CLASS = "state_class"
+else:
+    ATTR_STATE_CLASS = _HA_ATTR_STATE_CLASS
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
