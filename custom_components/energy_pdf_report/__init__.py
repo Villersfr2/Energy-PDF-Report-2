@@ -1768,91 +1768,27 @@ async def _collect_co2_statistics(
         return results
 
     entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
+    statistic_ids = list(entity_map.keys())
 
     instance = recorder.get_instance(hass)
 
-    metadata_requires_hass = _recorder_metadata_requires_hass()
-    metadata: dict[str, tuple[int, StatisticMetaData]]
-
-    try:
-        if metadata_requires_hass:
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                set(statistic_ids),
-            )
-        else:
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                set(statistic_ids),
-            )
-    except TypeError as err:
-        err_message = str(err)
-
-        if metadata_requires_hass and _metadata_error_indicates_legacy_signature(err_message):
-            _LOGGER.debug(
-                "Recorder get_metadata ne supporte pas hass en argument, bascule sur la signature héritée: %s",
-                err_message,
-            )
-            _set_recorder_metadata_requires_hass(False)
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                set(statistic_ids),
-            )
-        elif (
-            not metadata_requires_hass
-            and _metadata_error_indicates_requires_hass(err_message)
-        ):
-            _LOGGER.debug(
-                "Recorder get_metadata nécessite hass, nouvelle tentative avec la signature actuelle: %s",
-                err_message,
-            )
-            _set_recorder_metadata_requires_hass(True)
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                set(statistic_ids),
-            )
-        else:
-            raise
-
+    # --- Résoudre les state_class ---
     def resolve_state_class(entity_id: str) -> str | None:
-        state_class_value: str | None = None
+        state = hass.states.get(entity_id)
+        if state:
+            sc = state.attributes.get("state_class")
+            if isinstance(sc, str):
+                return sc
+        return None
 
-        state_obj = hass.states.get(entity_id)
-        if state_obj is not None:
-            state_class_attr = state_obj.attributes.get("state_class")
-            if not isinstance(state_class_attr, str):
-                state_class_attr = getattr(state_class_attr, "value", state_class_attr)
-            if isinstance(state_class_attr, str):
-                state_class_value = state_class_attr
+    state_class_map = {eid: resolve_state_class(eid) for eid in statistic_ids}
 
-        if state_class_value is None:
-            meta_entry = metadata.get(entity_id)
-            if meta_entry:
-                state_class_obj = meta_entry[1].get("state_class")
-                if not isinstance(state_class_obj, str):
-                    state_class_obj = getattr(state_class_obj, "value", state_class_obj)
-                if isinstance(state_class_obj, str):
-                    state_class_value = state_class_obj
-
-        return state_class_value
-
-    state_class_map: dict[str, str | None] = {
-        entity_id: resolve_state_class(entity_id) for entity_id in statistic_ids
-    }
-
-    hourly_ids = [
-        entity_id
-        for entity_id, state_class in state_class_map.items()
-        if state_class == "total"
-    ]
-
-    daily_ids = [entity_id for entity_id in statistic_ids if entity_id not in hourly_ids]
+    hourly_ids = [eid for eid, sc in state_class_map.items() if sc == "total"]
+    daily_ids = [eid for eid in statistic_ids if eid not in hourly_ids]
 
     stats_map: dict[str, list[StatisticsRow]] = {}
 
+    # --- Récupération daily pour total_increasing ---
     if daily_ids:
         daily_stats = await instance.async_add_executor_job(
             recorder_statistics.statistics_during_period,
@@ -1866,6 +1802,7 @@ async def _collect_co2_statistics(
         )
         stats_map.update(daily_stats)
 
+    # --- Récupération hour + agrégation pour total ---
     if hourly_ids:
         hourly_stats = await instance.async_add_executor_job(
             recorder_statistics.statistics_during_period,
@@ -1875,74 +1812,55 @@ async def _collect_co2_statistics(
             hourly_ids,
             "hour",
             None,
-            {"change", "sum"},
+            {"sum"},
         )
-        for entity_id, rows in hourly_stats.items():
-            stats_map[entity_id] = _aggregate_hourly_statistics_to_daily(rows or [])
 
-    for entity_id in statistic_ids:
+        for entity_id, rows in hourly_stats.items():
+            if not rows:
+                continue
+
+            # Grouper par jour et prendre max(sum)
+            daily_values: dict[date, Decimal] = {}
+            for row in rows:
+                s = _normalize_statistic_value(row.get("sum"))
+                if s is None:
+                    continue
+
+                row_start = row.get("start")
+                dt = dt_util.parse_datetime(row_start) if isinstance(row_start, str) else row_start
+                if dt is None:
+                    continue
+
+                dt = dt_util.as_utc(dt)
+                day_key = dt.date()
+                if day_key not in daily_values or s > daily_values[day_key]:
+                    daily_values[day_key] = s
+
+            # Convertir en rows journalières synthétiques
+            aggregated_rows = [
+                {"start": datetime.combine(day, datetime.min.time()).isoformat(), "sum": val}
+                for day, val in daily_values.items()
+            ]
+            stats_map[entity_id] = aggregated_rows
+
+    # --- Addition finale ---
+    for entity_id, definition in entity_map.items():
         rows = stats_map.get(entity_id)
         if not rows:
             continue
 
         total = Decimal("0")
-        has_sum = False
-        state_class = state_class_map.get(entity_id)
-
-        daily_totals: dict[date, Decimal] | None = None
-        if state_class == "total":
-            daily_totals = {}
-
         for row in rows:
             if not _row_starts_before(row, end):
                 continue
+            s = _normalize_statistic_value(row.get("sum"))
+            if s is not None:
+                total += s
 
-            if state_class == "total":
-                sum_value = _normalize_statistic_value(row.get("sum"))
-                if sum_value is None:
-                    continue
-
-                row_start: Any = getattr(row, "start", None)
-                if row_start is None and isinstance(row, Mapping):
-                    row_start = row.get("start")
-
-                if isinstance(row_start, str):
-                    row_start_dt = dt_util.parse_datetime(row_start)
-                elif isinstance(row_start, datetime):
-                    row_start_dt = row_start
-                else:
-                    row_start_dt = None
-
-                if row_start_dt is None:
-                    continue
-
-                if row_start_dt.tzinfo is None:
-                    row_start_dt = row_start_dt.replace(tzinfo=dt_util.UTC)
-                else:
-                    row_start_dt = dt_util.as_utc(row_start_dt)
-
-                day_key = row_start_dt.date()
-                existing = daily_totals.get(day_key)
-                if existing is None or sum_value > existing:
-                    daily_totals[day_key] = sum_value
-                has_sum = True
-                continue
-
-            contribution = _select_counter_total(row)
-            if contribution is None:
-                continue
-            has_sum = True
-            total += contribution
-
-        if state_class == "total" and daily_totals:
-            total = sum(daily_totals.values(), Decimal("0"))
-            has_sum = True
-
-        if has_sum:
-            definition = entity_map[entity_id]
-            results[definition.translation_key] = total
+        results[definition.translation_key] = total
 
     return results
+
 
 
 async def _collect_price_statistics(
