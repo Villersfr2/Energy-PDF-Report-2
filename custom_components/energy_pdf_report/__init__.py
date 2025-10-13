@@ -1195,42 +1195,54 @@ def _resolve_period(
 ) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
     """Calculer les dates de début et fin en tenant compte de la granularité."""
 
-    period: str = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
+    raw_period = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
+    period = str(raw_period) if raw_period is not None else DEFAULT_PERIOD
+    normalized_period = period.lower()
+
+    timezone = _select_timezone(hass)
+
     start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
     end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
 
-    now_local = dt_util.now()
+    now_local = dt_util.now(timezone)
 
-    if start_date is None:
-        if period == "day":
-            start_date = now_local.date()
-        elif period == "week":
-            start_date = (
-                now_local - timedelta(days=now_local.weekday() + 7)
-            ).date()
-        elif period == "month":
-            previous_month_start = (
-                (now_local.replace(day=1) - timedelta(days=1)).replace(day=1)
+    if normalized_period == "custom":
+        if start_date is None or end_date is None:
+            raise HomeAssistantError(
+                "Les périodes personnalisées nécessitent une date de début et une date de fin."
             )
-            start_date = previous_month_start.date()
-        else:
-            raise HomeAssistantError("Période non supportée")
+    else:
+        if start_date is None:
+            if normalized_period == "day":
+                start_date = now_local.date()
+            elif normalized_period == "week":
+                start_date = (
+                    now_local - timedelta(days=now_local.weekday() + 7)
+                ).date()
+            elif normalized_period == "month":
+                previous_month_start = (
+                    (now_local.replace(day=1) - timedelta(days=1)).replace(day=1)
+                )
+                start_date = previous_month_start.date()
+            else:
+                raise HomeAssistantError("Période non supportée")
 
-    if end_date is None:
-        if period == "day":
-            end_date = start_date
-        elif period == "week":
-            end_date = start_date + timedelta(days=6)
-        elif period == "month":
-            _, last_day = calendar.monthrange(start_date.year, start_date.month)
-            end_date = start_date.replace(day=last_day)
-    if end_date is None:
-        end_date = start_date
+        if end_date is None:
+            if normalized_period == "day":
+                end_date = start_date
+            elif normalized_period == "week":
+                end_date = start_date + timedelta(days=6)
+            elif normalized_period == "month":
+                _, last_day = calendar.monthrange(start_date.year, start_date.month)
+                end_date = start_date.replace(day=last_day)
+
+    if start_date is None or end_date is None:
+        raise HomeAssistantError(
+            "Les dates de début et de fin doivent être renseignées pour cette période."
+        )
 
     if end_date < start_date:
         raise HomeAssistantError("La date de fin doit être postérieure à la date de début.")
-
-    timezone = _select_timezone(hass)
 
     start_local = _localize_date(start_date, timezone)
 
@@ -1241,13 +1253,13 @@ def _resolve_period(
 
     start_utc = dt_util.as_utc(start_local)
     end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
-    display_end = end_local_exclusive - timedelta(seconds=1)
+    display_end_local = (end_utc - timedelta(seconds=1)).astimezone(timezone)
 
     return (
         start_utc,
         end_utc,
         start_local,
-        display_end,
+        display_end_local,
         _select_bucket(period, start_local, end_local_exclusive),
         timezone,
     )
@@ -1476,14 +1488,14 @@ def _parse_row_datetime(value: Any, timezone: tzinfo) -> datetime | None:
     return dt_util.as_utc(candidate)
 
 
-def _row_occurs_before_end(
-    row: Mapping[str, Any], end: datetime, timezone: tzinfo
+def _row_starts_before(
+    row: Mapping[str, Any] | StatisticsRow, end: datetime, timezone: tzinfo
 ) -> bool:
     """Vérifier que la ligne appartient bien à la période exclusive."""
 
-    start_dt = _parse_row_datetime(row.get("start"), timezone)
+    start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
     if start_dt is None:
-        start_dt = _parse_row_datetime(row.get("end"), timezone)
+        start_dt = _parse_row_datetime(_row_value(row, "end"), timezone)
 
     if start_dt is None:
         return True
@@ -1501,19 +1513,153 @@ def _filter_statistics_map_by_end(
     filtered: dict[str, list[StatisticsRow]] = {}
 
     for statistic_id, rows in stats_map.items():
-        if isinstance(rows, list):
-            row_list = rows
-        elif rows:
-            row_list = list(rows)
-        else:
-            row_list = []
+        row_list = _ensure_statistics_list(rows)
 
         filtered_rows = [
-            row for row in row_list if _row_occurs_before_end(row, end, timezone)
+            row for row in row_list if _row_starts_before(row, end, timezone)
         ]
         filtered[statistic_id] = filtered_rows
 
     return filtered
+
+
+def _ensure_statistics_list(
+    rows: Iterable[StatisticsRow] | Iterable[Mapping[str, Any]] | None
+) -> list[StatisticsRow | Mapping[str, Any]]:
+    """Normaliser une collection de statistiques en liste."""
+
+    if isinstance(rows, list):
+        return rows
+
+    if rows is None:
+        return []
+
+    return list(rows)
+
+
+def _row_value(row: Mapping[str, Any] | StatisticsRow, key: str) -> Any:
+    """Extraire une valeur d'une ligne de statistiques."""
+
+    if isinstance(row, Mapping):
+        return row.get(key)
+
+    return getattr(row, key, None)
+
+
+def _extract_row_total(row: Mapping[str, Any] | StatisticsRow) -> float | None:
+    """Récupérer la valeur cumulative utile d'une ligne."""
+
+    for key in ("sum", "state"):
+        value = _row_value(row, key)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+
+    return None
+
+
+def _sum_daily_totals(
+    rows: Iterable[Mapping[str, Any] | StatisticsRow], timezone: tzinfo
+) -> dict[date, float]:
+    """Construire le total quotidien maximum pour chaque journée locale."""
+
+    daily_max: dict[date, float] = {}
+    daily_changes: defaultdict[date, float] = defaultdict(float)
+
+    for row in rows:
+        start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
+        if start_dt is None:
+            continue
+
+        local_day = start_dt.astimezone(timezone).date()
+        total_value = _extract_row_total(row)
+        if total_value is not None:
+            current = daily_max.get(local_day)
+            if current is None or total_value > current:
+                daily_max[local_day] = total_value
+            continue
+
+        change_value = _row_value(row, "change")
+        if change_value is None:
+            continue
+
+        try:
+            change_total = float(change_value)
+        except (TypeError, ValueError):
+            continue
+
+        daily_changes[local_day] += change_total
+
+    combined_days = set(daily_max) | set(daily_changes)
+    return {
+        day: (daily_max[day] if day in daily_max else daily_changes[day])
+        for day in combined_days
+    }
+
+
+async def _collect_totals_for_sensors(
+    hass: HomeAssistant,
+    start: datetime,
+    end: datetime,
+    sensors: Iterable[Any],
+    timezone: tzinfo,
+) -> dict[str, float]:
+    """Additionner les totaux journaliers pour une collection de capteurs."""
+
+    definitions = list(sensors)
+    results: dict[str, float] = {
+        definition.translation_key: 0.0 for definition in definitions
+    }
+
+    if not definitions:
+        return results
+
+    instance = recorder.get_instance(hass)
+
+    statistic_ids = [definition.entity_id for definition in definitions]
+
+    stats_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        statistic_ids,
+        "day",
+        None,
+        {"sum", "state", "change"},
+    )
+
+    if stats_map is None:
+        stats_map = {}
+    else:
+        stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
+
+    last_local_day = (end - timedelta(seconds=1)).astimezone(timezone).date()
+
+    for definition in definitions:
+        rows_list = _ensure_statistics_list(stats_map.get(definition.entity_id))
+        if not rows_list:
+            continue
+
+        rows_list = [
+            row for row in rows_list if _row_starts_before(row, end, timezone)
+        ]
+        if not rows_list:
+            continue
+
+        daily_max_sums = _sum_daily_totals(rows_list, timezone)
+        if not daily_max_sums:
+            continue
+
+        total = sum(
+            value for day, value in daily_max_sums.items() if day <= last_local_day
+        )
+        results[definition.translation_key] = total
+
+    return results
 
 
 async def _async_collect_statistics_via_manager(
@@ -1702,52 +1848,7 @@ async def _collect_co2_statistics(
     timezone: tzinfo,
 ) -> dict[str, float]:
     """Assembler les totaux CO₂ sur la période demandée."""
-
-    definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
-    }
-
-    if not definitions:
-        return results
-
-    entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
-
-    instance = recorder.get_instance(hass)
-
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        "day",
-        None,
-        {"change"},
-    )
-
-    stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
-
-    for entity_id in statistic_ids:
-        rows = stats_map.get(entity_id)
-        if not rows:
-            continue
-
-        total = 0.0
-        has_sum = False
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_sum = True
-            total += float(change_value)
-
-        if has_sum:
-            definition = entity_map[entity_id]
-            results[definition.translation_key] = total
-
-    return results
+    return await _collect_totals_for_sensors(hass, start, end, sensors, timezone)
 
 
 async def _collect_price_statistics(
@@ -1758,52 +1859,7 @@ async def _collect_price_statistics(
     timezone: tzinfo,
 ) -> dict[str, float]:
     """Assembler les totaux financiers sur la période demandée."""
-
-    definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
-    }
-
-    if not definitions:
-        return results
-
-    entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
-
-    instance = recorder.get_instance(hass)
-
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        "day",
-        None,
-        {"change"},
-    )
-
-    stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
-
-    for entity_id in statistic_ids:
-        rows = stats_map.get(entity_id)
-        if not rows:
-            continue
-
-        total = 0.0
-        has_sum = False
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_sum = True
-            total += float(change_value)
-
-        if has_sum:
-            definition = entity_map[entity_id]
-            results[definition.translation_key] = total
-
-    return results
+    return await _collect_totals_for_sensors(hass, start, end, sensors, timezone)
 
 
 def _get_recorder_metadata_with_hass(
