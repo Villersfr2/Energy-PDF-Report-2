@@ -107,6 +107,8 @@ from .translations import ReportTranslations, get_report_translations
 if TYPE_CHECKING:
     from homeassistant.components.energy.data import EnergyPreferences
 
+ATTR_STATE_CLASS = "state_class"
+
 _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
