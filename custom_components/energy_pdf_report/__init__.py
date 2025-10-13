@@ -592,7 +592,14 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     period = str(period_value)
     call_data[CONF_PERIOD] = period
 
-    start, end, display_start, display_end, bucket = _resolve_period(hass, call_data)
+    (
+        start,
+        end,
+        display_start,
+        display_end,
+        bucket,
+        timezone,
+    ) = _resolve_period(hass, call_data)
 
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
@@ -615,7 +622,6 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                     "Mode comparaison désactivé: la date de fin de comparaison doit être postérieure à la date de début."
                 )
             else:
-                timezone = _select_timezone(hass)
                 compare_start_local = _localize_date(compare_start_date, timezone)
                 compare_end_local = _localize_date(compare_end_date, timezone)
                 compare_end_exclusive = compare_end_local + timedelta(days=1)
@@ -650,7 +656,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         )
 
     stats_result = await _collect_statistics(
-        hass, manager, metrics, start, end, bucket
+        hass, manager, metrics, start, end, bucket, timezone
     )
     totals = _calculate_totals(metrics, stats_result.stats)
     primary_context = PeriodStatisticsContext(
@@ -673,6 +679,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 comparison_period["start"],
                 comparison_period["end"],
                 comparison_period["bucket"],
+                timezone,
             )
         except Exception as err:  # pragma: no cover - defensive logging
             _LOGGER.error(
@@ -709,6 +716,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             start,
             end,
             co2_definitions,
+            timezone,
         )
 
     price_totals: dict[str, float] = {}
@@ -718,6 +726,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             start,
             end,
             price_definitions,
+            timezone,
         )
 
     output_dir_input = call.data.get(
@@ -1183,7 +1192,7 @@ def _format_dashboard_label(selection: DashboardSelection) -> str | None:
 
 def _resolve_period(
     hass: HomeAssistant, call_data: dict[str, Any]
-) -> tuple[datetime, datetime, datetime, datetime, str]:
+) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
     """Calculer les dates de début et fin en tenant compte de la granularité."""
 
     period: str = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
@@ -1240,6 +1249,7 @@ def _resolve_period(
         start_local,
         display_end,
         _select_bucket(period, start_local, end_local_exclusive),
+        timezone,
     )
 
 
@@ -1445,6 +1455,72 @@ def _normalize_statistics_map(result: Any) -> dict[str, list[StatisticsRow]] | N
     return None
 
 
+def _parse_row_datetime(value: Any, timezone: tzinfo) -> datetime | None:
+    """Convertir une valeur potentielle de date en datetime UTC."""
+
+    candidate: datetime | None
+
+    if isinstance(value, datetime):
+        candidate = value
+    elif isinstance(value, str):
+        candidate = dt_util.parse_datetime(value)
+    elif isinstance(value, (int, float)):
+        try:
+            return dt_util.utc_from_timestamp(float(value))
+        except (OverflowError, ValueError, TypeError):
+            return None
+    else:
+        candidate = None
+
+    if candidate is None:
+        return None
+
+    if candidate.tzinfo is None:
+        candidate = candidate.replace(tzinfo=timezone)
+
+    return dt_util.as_utc(candidate)
+
+
+def _row_occurs_before_end(
+    row: Mapping[str, Any], end: datetime, timezone: tzinfo
+) -> bool:
+    """Vérifier que la ligne appartient bien à la période exclusive."""
+
+    start_dt = _parse_row_datetime(row.get("start"), timezone)
+    if start_dt is None:
+        start_dt = _parse_row_datetime(row.get("end"), timezone)
+
+    if start_dt is None:
+        return True
+
+    return start_dt < end
+
+
+def _filter_statistics_map_by_end(
+    stats_map: Mapping[str, Iterable[StatisticsRow]],
+    end: datetime,
+    timezone: tzinfo,
+) -> dict[str, list[StatisticsRow]]:
+    """Exclure les lignes situées après la borne de fin exclusive."""
+
+    filtered: dict[str, list[StatisticsRow]] = {}
+
+    for statistic_id, rows in stats_map.items():
+        if isinstance(rows, list):
+            row_list = rows
+        elif rows:
+            row_list = list(rows)
+        else:
+            row_list = []
+
+        filtered_rows = [
+            row for row in row_list if _row_occurs_before_end(row, end, timezone)
+        ]
+        filtered[statistic_id] = filtered_rows
+
+    return filtered
+
+
 async def _async_collect_statistics_via_manager(
     manager: Any,
     hass: HomeAssistant,
@@ -1505,6 +1581,7 @@ async def _collect_statistics(
     start: datetime,
     end: datetime,
     bucket: str,
+    timezone: tzinfo,
 ) -> StatisticsResult:
     """Récupérer les statistiques depuis recorder."""
 
@@ -1515,6 +1592,9 @@ async def _collect_statistics(
     stats_map = await _async_collect_statistics_via_manager(
         manager, hass, statistic_ids, start, end, bucket
     )
+
+    if stats_map is not None:
+        stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
 
     try:
         instance = recorder.get_instance(hass)
@@ -1611,6 +1691,11 @@ async def _collect_statistics(
             {"change"},
         )
 
+    if stats_map is None:
+        stats_map = {}
+    else:
+        stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
+
     return StatisticsResult(stats_map, metadata)
 
 
@@ -1619,6 +1704,7 @@ async def _collect_co2_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[CO2SensorDefinition],
+    timezone: tzinfo,
 ) -> dict[str, float]:
     """Assembler les totaux CO₂ sur la période demandée."""
 
@@ -1646,6 +1732,8 @@ async def _collect_co2_statistics(
         {"change"},
     )
 
+    stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
+
     for entity_id in statistic_ids:
         rows = stats_map.get(entity_id)
         if not rows:
@@ -1672,6 +1760,7 @@ async def _collect_price_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[PriceSensorDefinition],
+    timezone: tzinfo,
 ) -> dict[str, float]:
     """Assembler les totaux financiers sur la période demandée."""
 
@@ -1698,6 +1787,8 @@ async def _collect_price_statistics(
         None,
         {"change"},
     )
+
+    stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
 
     for entity_id in statistic_ids:
         rows = stats_map.get(entity_id)
