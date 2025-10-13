@@ -1790,6 +1790,8 @@ async def _collect_co2_statistics(
         state_obj = hass.states.get(entity_id)
         if state_obj is not None:
             state_class_attr = state_obj.attributes.get("state_class")
+            if not isinstance(state_class_attr, str):
+                state_class_attr = getattr(state_class_attr, "value", state_class_attr)
             if isinstance(state_class_attr, str):
                 state_class = state_class_attr
 
@@ -1797,6 +1799,8 @@ async def _collect_co2_statistics(
             meta_entry = metadata.get(entity_id)
             if meta_entry:
                 state_class_obj = meta_entry[1].get("state_class")
+                if not isinstance(state_class_obj, str):
+                    state_class_obj = getattr(state_class_obj, "value", state_class_obj)
                 if isinstance(state_class_obj, str):
                     state_class = state_class_obj
 
