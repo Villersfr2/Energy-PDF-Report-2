@@ -1873,30 +1873,14 @@ async def _collect_totals_for_sensors(
         state_class = _resolve_state_class_for_entity(hass, metadata, entity_id)
 
         if state_class == "total":
-            daily_max_sums: dict[date, Decimal] = {}
-
-            for row in rows_list:
-                sum_value = _decimal_from_value(row.get("sum"))
-                if sum_value is None:
-                    continue
-
-                start_value = row.get("start")
-                if isinstance(start_value, datetime):
-                    start_dt: datetime | None = start_value
-                elif start_value is None:
-                    start_dt = None
-                else:
-                    start_dt = dt_util.parse_datetime(str(start_value))
-
-                if start_dt is None:
-                    continue
-
-                local_day = dt_util.as_local(start_dt).date()
-                current_max = daily_max_sums.get(local_day)
-                if current_max is None or sum_value > current_max:
-                    daily_max_sums[local_day] = sum_value
-
-            total = sum(daily_max_sums.values(), Decimal("0"))
+            total = await _collect_total_state_values(
+                hass,
+                instance,
+                entity_id,
+                rows_list,
+                start,
+                end,
+            )
         else:
             total = _sum_changes(rows_list)
 
