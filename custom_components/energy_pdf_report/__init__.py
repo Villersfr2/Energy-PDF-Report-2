@@ -1664,13 +1664,15 @@ def _sum_changes(rows: Iterable[StatisticsRow] | None) -> Decimal:
 
 
 def _sum_daily_totals(rows: Iterable[StatisticsRow]) -> Decimal | None:
-    """Additionner les dernières valeurs quotidiennes d'un capteur `total`."""
+    """Additionner les totaux quotidiens d'un capteur `total`."""
 
     daily_totals: dict[date, Decimal] = {}
 
     for row in rows:
-        sum_value = _decimal_from_value(row.get("sum"))
-        if sum_value is None:
+        value = _decimal_from_value(row.get("sum"))
+        if value is None:
+            value = _decimal_from_value(row.get("change"))
+        if value is None:
             continue
 
         timestamp = row.get("end") or row.get("start")
@@ -1678,7 +1680,8 @@ def _sum_daily_totals(rows: Iterable[StatisticsRow]) -> Decimal | None:
             continue
 
         day = dt_util.as_local(timestamp).date()
-        daily_totals[day] = sum_value
+        current_total = daily_totals.get(day, Decimal("0"))
+        daily_totals[day] = current_total + value
 
     if not daily_totals:
         return None
