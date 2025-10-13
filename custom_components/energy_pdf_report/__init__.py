@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import calendar
+
 import inspect
 import logging
 import secrets
@@ -10,7 +12,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, tzinfo
 
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, TYPE_CHECKING
 from urllib.parse import quote, urljoin
@@ -21,15 +22,7 @@ from homeassistant.components import persistent_notification, recorder
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder.statistics import StatisticsRow
-
-try:  # pragma: no cover - compat shim across HA versions
-    from homeassistant.const import ATTR_STATE_CLASS as _HA_ATTR_STATE_CLASS, CONF_FILENAME
-except ImportError:  # pragma: no cover - ATTR_STATE_CLASS removed in newer HA
-    from homeassistant.const import CONF_FILENAME
-
-    ATTR_STATE_CLASS = "state_class"
-else:
-    ATTR_STATE_CLASS = _HA_ATTR_STATE_CLASS
+from homeassistant.const import CONF_FILENAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.config_entries import ConfigEntry
@@ -104,8 +97,6 @@ from .translations import ReportTranslations, get_report_translations
 
 if TYPE_CHECKING:
     from homeassistant.components.energy.data import EnergyPreferences
-
-ATTR_STATE_CLASS = "state_class"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -601,22 +592,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     period = str(period_value)
     call_data[CONF_PERIOD] = period
 
-    timezone = _select_timezone(hass)
-
-    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
-    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
-
-    start_hint = _localize_date(start_date, timezone) if start_date else None
-    end_hint = _localize_date(end_date, timezone) if end_date else None
-
-    start, end = _resolve_period(period, start_hint, end_hint)
-
-    start_local = start.astimezone(timezone)
-    end_local_exclusive = end.astimezone(timezone)
-
-    display_start = start_local
-    display_end = end_local_exclusive - timedelta(seconds=1)
-    bucket = _select_bucket(period, start_local, end_local_exclusive)
+    start, end, display_start, display_end, bucket = _resolve_period(hass, call_data)
 
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
@@ -726,7 +702,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     if price_enabled:
         price_definitions = _build_price_sensor_definitions(options)
 
-    co2_totals: dict[str, Decimal] = {}
+    co2_totals: dict[str, float] = {}
     if co2_definitions:
         co2_totals = await _collect_co2_statistics(
             hass,
@@ -735,7 +711,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             co2_definitions,
         )
 
-    price_totals: dict[str, Decimal] = {}
+    price_totals: dict[str, float] = {}
     if price_definitions:
         price_totals = await _collect_price_statistics(
             hass,
@@ -1206,61 +1182,60 @@ def _format_dashboard_label(selection: DashboardSelection) -> str | None:
 
 
 def _resolve_period(
-    period: str | None,
-    period_start: datetime | None,
-    period_end: datetime | None,
-) -> tuple[datetime, datetime]:
-    """Normaliser la période demandée en bornes UTC exclusives.
+    hass: HomeAssistant, call_data: dict[str, Any]
+) -> tuple[datetime, datetime, datetime, datetime, str]:
+    """Calculer les dates de début et fin en tenant compte de la granularité."""
 
-    Les dates personnalisées et les périodes prédéfinies utilisent la même logique :
-    on travaille toujours sur des journées complètes en local puis on convertit en UTC
-    avec une borne de fin exclusive, ce qui évite toute double inclusion d'une journée.
-    """
+    period: str = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
+    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
+    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
 
-    # Cas 1 – l'utilisateur a fourni explicitement une période personnalisée.
-    if period_start is not None or period_end is not None:
-        # Reprendre les bornes fournies (ou déduites) et les normaliser sur minuit local.
-        reference_start = period_start or period_end
-        reference_end = period_end or period_start
-
-        if reference_start is None or reference_end is None:
-            raise HomeAssistantError("La période personnalisée est incomplète.")
-
-        start_local = dt_util.start_of_local_day(reference_start)
-        end_local = dt_util.start_of_local_day(reference_end)
-        end_local_exclusive = end_local + timedelta(days=1)
-
-        if end_local_exclusive <= start_local:
-            raise HomeAssistantError(
-                "La date de fin doit être postérieure à la date de début."
-            )
-
-        return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
-
-    # Cas 2 – période relative (day/week/month) basée sur la date actuelle.
-    normalized = (period or DEFAULT_PERIOD).lower()
     now_local = dt_util.now()
-    today_start = dt_util.start_of_local_day(now_local)
 
-    if normalized == "day":
-        # Journée précédente complète.
-        end_local_exclusive = today_start
-        start_local = end_local_exclusive - timedelta(days=1)
-    elif normalized == "week":
-        # Semaine précédente complète (lundi → dimanche).
-        current_week_start = today_start - timedelta(days=today_start.weekday())
-        end_local_exclusive = current_week_start
-        start_local = end_local_exclusive - timedelta(days=7)
-    elif normalized == "month":
-        # Mois précédent complet.
-        current_month_start = today_start.replace(day=1)
-        end_local_exclusive = current_month_start
-        previous_month_last_day = end_local_exclusive - timedelta(days=1)
-        start_local = previous_month_last_day.replace(day=1)
-    else:
-        raise HomeAssistantError("Période non supportée")
+    if start_date is None:
+        if period == "day":
+            start_date = now_local.date()
+        elif period == "week":
+            start_date = (now_local - timedelta(days=now_local.weekday())).date()
+        elif period == "month":
+            start_date = now_local.replace(day=1).date()
+        else:
+            raise HomeAssistantError("Période non supportée")
 
-    return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
+    if end_date is None:
+        if period == "day":
+            end_date = start_date
+        elif period == "week":
+            end_date = start_date + timedelta(days=6)
+        elif period == "month":
+            _, last_day = calendar.monthrange(start_date.year, start_date.month)
+            end_date = start_date.replace(day=last_day)
+    if end_date is None:
+        end_date = start_date
+
+    if end_date < start_date:
+        raise HomeAssistantError("La date de fin doit être postérieure à la date de début.")
+
+    timezone = _select_timezone(hass)
+
+    start_local = _localize_date(start_date, timezone)
+
+    # ``end_date`` reste inclusif comme dans le tableau de bord Énergie ;
+    # recorder se charge ensuite de convertir ce point de sortie en borne exclusive.
+    end_local = _localize_date(end_date, timezone)
+    end_local_exclusive = end_local + timedelta(days=1)
+
+    start_utc = dt_util.as_utc(start_local)
+    end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
+    display_end = end_local_exclusive - timedelta(seconds=1)
+
+    return (
+        start_utc,
+        end_utc,
+        start_local,
+        display_end,
+        _select_bucket(period, start_local, end_local_exclusive),
+    )
 
 
 
@@ -1634,272 +1609,17 @@ async def _collect_statistics(
     return StatisticsResult(stats_map, metadata)
 
 
-def _decimal_from_value(value: Any) -> Decimal | None:
-    """Convertir une valeur quelconque en Decimal si possible."""
-
-    if value is None:
-        return None
-
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-
-
-def _sum_changes(rows: Iterable[StatisticsRow] | None) -> Decimal:
-    """Additionner les variations journalières d'un capteur cumulatif."""
-
-    total = Decimal("0")
-
-    if not rows:
-        return total
-
-    for row in rows:
-        change_value = _decimal_from_value(row.get("change"))
-        if change_value is None:
-            continue
-        total += change_value
-
-    return total
-
-
-def _calculate_last_minus_first(
-    rows: Iterable[StatisticsRow] | None,
-) -> Decimal | None:
-    """Calculer la différence entre la dernière et la première valeur disponible."""
-
-    first_value: Decimal | None = None
-    last_value: Decimal | None = None
-
-    if not rows:
-        return None
-
-    ordered_rows = list(rows)
-    if not ordered_rows:
-        return None
-
-    def _sort_key(row: StatisticsRow) -> float:
-        timestamp = row.get("start") or row.get("end")
-        if isinstance(timestamp, datetime):
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=dt_util.UTC)
-            else:
-                timestamp = dt_util.as_utc(timestamp)
-            return timestamp.timestamp()
-        return float("-inf")
-
-    ordered_rows.sort(key=_sort_key)
-
-    for row in ordered_rows:
-        candidate = _decimal_from_value(row.get("sum"))
-        if candidate is None:
-            candidate = _decimal_from_value(row.get("state"))
-
-        if candidate is None:
-            continue
-
-        if first_value is None:
-            first_value = candidate
-
-        last_value = candidate
-
-    if first_value is None or last_value is None:
-        return None
-
-    return last_value - first_value
-
-
-async def _async_fetch_statistics_metadata(
-    hass: HomeAssistant,
-    instance: Any,
-    statistic_ids: set[str],
-) -> dict[str, tuple[int, StatisticMetaData]]:
-    """Récupérer les métadonnées recorder pour les entités concernées."""
-
-    if not statistic_ids:
-        return {}
-
-    metadata_requires_hass = _recorder_metadata_requires_hass()
-
-    try:
-        if metadata_requires_hass:
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                statistic_ids,
-            )
-        else:
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                statistic_ids,
-            )
-    except TypeError as err:
-        err_message = str(err)
-
-        if metadata_requires_hass and _metadata_error_indicates_legacy_signature(
-            err_message
-        ):
-            _set_recorder_metadata_requires_hass(False)
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                statistic_ids,
-            )
-        elif (
-            not metadata_requires_hass
-            and _metadata_error_indicates_requires_hass(err_message)
-        ):
-            _set_recorder_metadata_requires_hass(True)
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                statistic_ids,
-            )
-        else:
-            raise
-
-    return metadata
-
-
-def _resolve_state_class_for_entity(
-    hass: HomeAssistant,
-    metadata: Mapping[str, tuple[int, StatisticMetaData]],
-    entity_id: str,
-) -> str | None:
-    """Déterminer le state_class d'une entité via recorder ou l'état courant."""
-
-    entry = metadata.get(entity_id)
-    if entry:
-        meta = entry[1]
-        state_class = meta.get("state_class")
-        if state_class:
-            return str(state_class)
-
-        original_state_class = meta.get("original_state_class")
-        if original_state_class:
-            return str(original_state_class)
-
-    state = hass.states.get(entity_id)
-    if state:
-        attribute_state_class = state.attributes.get(ATTR_STATE_CLASS)
-        if attribute_state_class:
-            return str(attribute_state_class)
-
-    return None
-
-
-def _sum_daily_max_values(
-    rows: Iterable[StatisticsRow] | None,
-    timezone: tzinfo,
-) -> Decimal | None:
-    """Additionner la valeur maximale `sum` pour chaque jour local."""
-
-    if not rows:
-        return None
-
-    daily_max: dict[date, Decimal] = {}
-
-    for row in rows:
-        sum_value = _decimal_from_value(row.get("sum"))
-        if sum_value is None:
-            sum_value = _decimal_from_value(row.get("state"))
-
-        if sum_value is None:
-            continue
-
-        timestamp = row.get("start") or row.get("end")
-        if not isinstance(timestamp, datetime):
-            continue
-
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=dt_util.UTC)
-
-        local_dt = timestamp.astimezone(timezone)
-        local_day = local_dt.date()
-
-        current_max = daily_max.get(local_day)
-        if current_max is None or sum_value > current_max:
-            daily_max[local_day] = sum_value
-
-    if not daily_max:
-        return None
-
-    total = Decimal("0")
-    for value in daily_max.values():
-        total += value
-
-    return total
-
-
-async def _collect_total_state_values(
-    hass: HomeAssistant,
-    instance: Any,
-    entity_id: str,
-    rows: list[StatisticsRow],
-    start: datetime,
-    end: datetime,
-    timezone: tzinfo,
-) -> Decimal:
-    """Calculer la somme totale pour un capteur avec `state_class = total`."""
-
-    daily_max_total = _sum_daily_max_values(rows, timezone)
-    if daily_max_total is not None:
-        return daily_max_total
-
-    difference = _calculate_last_minus_first(rows)
-    if difference is not None:
-        return difference
-
-    period_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        [entity_id],
-        None,
-        None,
-        {"sum", "state"},
-    )
-
-    period_rows = period_map.get(entity_id) if period_map else None
-    fallback_daily_max = _sum_daily_max_values(period_rows, timezone)
-    if fallback_daily_max is not None:
-        return fallback_daily_max
-
-    fallback_difference = _calculate_last_minus_first(period_rows)
-    if fallback_difference is not None:
-        return fallback_difference
-
-    return Decimal("0")
-
-
-def _calculate_total_increasing_period_end(
-    end: datetime,
-    timezone: tzinfo,
-) -> datetime:
-    """Aligner la borne de fin exclusive sur le minuit local du jour suivant."""
-
-    if end.tzinfo is None:
-        end = end.replace(tzinfo=dt_util.UTC)
-
-    local_end_exclusive = end.astimezone(timezone)
-    last_day_local = local_end_exclusive.date() - timedelta(days=1)
-    next_day_local = last_day_local + timedelta(days=1)
-    local_midnight_next_day = _localize_date(next_day_local, timezone)
-
-    return dt_util.as_utc(local_midnight_next_day)
-
-
-async def _collect_totals_for_sensors(
+async def _collect_co2_statistics(
     hass: HomeAssistant,
     start: datetime,
     end: datetime,
-    sensors: Iterable[CO2SensorDefinition | PriceSensorDefinition],
-) -> dict[str, Decimal]:
-    """Rassembler les totaux pour les capteurs financiers ou CO₂."""
+    sensors: Iterable[CO2SensorDefinition],
+) -> dict[str, float]:
+    """Assembler les totaux CO₂ sur la période demandée."""
 
     definitions = list(sensors)
-    results: dict[str, Decimal] = {
-        definition.translation_key: Decimal("0") for definition in definitions
+    results: dict[str, float] = {
+        definition.translation_key: 0.0 for definition in definitions
     }
 
     if not definitions:
@@ -1910,96 +1630,36 @@ async def _collect_totals_for_sensors(
 
     instance = recorder.get_instance(hass)
 
-    metadata = await _async_fetch_statistics_metadata(
-        hass, instance, set(statistic_ids)
+    stats_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        statistic_ids,
+        "day",
+        None,
+        {"change"},
     )
 
-    timezone = _select_timezone(hass)
-
-    state_class_map: dict[str, str | None] = {}
-    total_increasing_ids: list[str] = []
-    standard_ids: list[str] = []
-
     for entity_id in statistic_ids:
-        state_class = _resolve_state_class_for_entity(hass, metadata, entity_id)
-        state_class_map[entity_id] = state_class
+        rows = stats_map.get(entity_id)
+        if not rows:
+            continue
 
-        if state_class == "total_increasing":
-            total_increasing_ids.append(entity_id)
-        else:
-            standard_ids.append(entity_id)
+        total = 0.0
+        has_sum = False
+        for row in rows:
+            change_value = row.get("change")
+            if change_value is None:
+                continue
+            has_sum = True
+            total += float(change_value)
 
-    stats_map: dict[str, list[StatisticsRow]] = {}
-    if standard_ids:
-        stats_map = await instance.async_add_executor_job(
-            recorder_statistics.statistics_during_period,
-            hass,
-            start,
-            end,
-            standard_ids,
-            "day",
-            None,
-            {"change", "sum", "state"},
-        )
-        if stats_map is None:
-            stats_map = {}
-
-    total_increasing_map: dict[str, list[StatisticsRow]] = {}
-    if total_increasing_ids:
-        total_increasing_end = _calculate_total_increasing_period_end(end, timezone)
-        total_increasing_map = await instance.async_add_executor_job(
-            recorder_statistics.statistics_during_period,
-            hass,
-            start,
-            total_increasing_end,
-            total_increasing_ids,
-            "day",
-            None,
-            {"change", "sum", "state"},
-        )
-        if total_increasing_map is None:
-            total_increasing_map = {}
-
-    for entity_id, definition in entity_map.items():
-        state_class = state_class_map.get(entity_id)
-
-        if state_class == "total":
-            rows = stats_map.get(entity_id) or []
-            rows_list = list(rows) if rows else []
-            total = await _collect_total_state_values(
-                hass,
-                instance,
-                entity_id,
-                rows_list,
-                start,
-                end,
-                timezone,
-            )
-        elif state_class == "total_increasing":
-            rows = total_increasing_map.get(entity_id)
-            if rows is None:
-                rows = stats_map.get(entity_id) or []
-            rows_list = list(rows) if rows else []
-            total = _sum_changes(rows_list)
-        else:
-            rows = stats_map.get(entity_id) or []
-            rows_list = list(rows) if rows else []
-            total = _sum_changes(rows_list)
-
-        results[definition.translation_key] = total
+        if has_sum:
+            definition = entity_map[entity_id]
+            results[definition.translation_key] = total
 
     return results
-
-
-async def _collect_co2_statistics(
-    hass: HomeAssistant,
-    start: datetime,
-    end: datetime,
-    sensors: Iterable[CO2SensorDefinition],
-) -> dict[str, Decimal]:
-    """Assembler les totaux CO₂ sur la période demandée."""
-
-    return await _collect_totals_for_sensors(hass, start, end, sensors)
 
 
 async def _collect_price_statistics(
@@ -2007,10 +1667,52 @@ async def _collect_price_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[PriceSensorDefinition],
-) -> dict[str, Decimal]:
+) -> dict[str, float]:
     """Assembler les totaux financiers sur la période demandée."""
 
-    return await _collect_totals_for_sensors(hass, start, end, sensors)
+    definitions = list(sensors)
+    results: dict[str, float] = {
+        definition.translation_key: 0.0 for definition in definitions
+    }
+
+    if not definitions:
+        return results
+
+    entity_map = {definition.entity_id: definition for definition in definitions}
+    statistic_ids = list(entity_map)
+
+    instance = recorder.get_instance(hass)
+
+    stats_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        statistic_ids,
+        "day",
+        None,
+        {"change"},
+    )
+
+    for entity_id in statistic_ids:
+        rows = stats_map.get(entity_id)
+        if not rows:
+            continue
+
+        total = 0.0
+        has_sum = False
+        for row in rows:
+            change_value = row.get("change")
+            if change_value is None:
+                continue
+            has_sum = True
+            total += float(change_value)
+
+        if has_sum:
+            definition = entity_map[entity_id]
+            results[definition.translation_key] = total
+
+    return results
 
 
 def _get_recorder_metadata_with_hass(
@@ -2121,10 +1823,10 @@ def _build_pdf(
     translations: ReportTranslations,
 
     co2_definitions: Iterable[CO2SensorDefinition],
-    co2_totals: dict[str, Decimal],
+    co2_totals: dict[str, float],
 
     price_definitions: Iterable[PriceSensorDefinition],
-    price_totals: dict[str, Decimal],
+    price_totals: dict[str, float],
 
     advice_text: str,
     conclusion_summary: ConclusionSummary | None = None,
@@ -2303,13 +2005,11 @@ def _build_pdf(
         builder.add_paragraph(translations.price_section_intro)
 
         price_rows: list[tuple[str, str, str]] = []
-        expenses_total = Decimal("0")
-        income_total = Decimal("0")
+        expenses_total = 0.0
+        income_total = 0.0
 
         for definition in price_definitions:
-            value = price_totals_map.get(
-                definition.translation_key, Decimal("0")
-            )
+            value = price_totals_map.get(definition.translation_key, 0.0)
             label = translations.price_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -2348,8 +2048,8 @@ def _build_pdf(
 
     totals_map = co2_totals or {}
     co2_rows: list[tuple[str, str, str]] = []
-    emissions_total = Decimal("0")
-    savings_total = Decimal("0")
+    emissions_total = 0.0
+    savings_total = 0.0
 
 
     if co2_definitions:
@@ -2357,13 +2057,11 @@ def _build_pdf(
         builder.add_paragraph(translations.co2_section_intro)
 
         co2_rows: list[tuple[str, str, str]] = []
-        emissions_total = Decimal("0")
-        savings_total = Decimal("0")
+        emissions_total = 0.0
+        savings_total = 0.0
 
         for definition in co2_definitions:
-            value = totals_map.get(
-                definition.translation_key, Decimal("0")
-            )
+            value = totals_map.get(definition.translation_key, 0.0)
             label = translations.co2_sensor_labels.get(
                 definition.translation_key, definition.translation_key
             )
@@ -2960,32 +2658,30 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
-def _format_number(value: float | Decimal) -> str:
+def _format_number(value: float) -> str:
     """Formater une valeur numérique de manière lisible."""
 
-    numeric = float(value)
+    if abs(value) < 0.0005:
+        value = 0.0
 
-    if abs(numeric) < 0.0005:
-        numeric = 0.0
-
-    if abs(numeric) >= 1000:
-        formatted = f"{numeric:,.0f}"
-    elif abs(numeric) >= 10:
-        formatted = f"{numeric:,.1f}"
+    if abs(value) >= 1000:
+        formatted = f"{value:,.0f}"
+    elif abs(value) >= 10:
+        formatted = f"{value:,.1f}"
     else:
-        formatted = f"{numeric:,.3f}"
+        formatted = f"{value:,.3f}"
 
     return formatted.replace(",", " ")
 
 
-def _format_with_unit(value: float | Decimal, unit: str | None) -> str:
+def _format_with_unit(value: float, unit: str | None) -> str:
     """Associer un formatage numérique avec une unité si disponible."""
 
     formatted = _format_number(value)
     return f"{formatted} {unit}".strip() if unit else formatted
 
 
-def _format_signed_number(value: float | Decimal) -> str:
+def _format_signed_number(value: float) -> str:
     """Formater un nombre en ajoutant explicitement le signe positif."""
 
     formatted = _format_number(value)
