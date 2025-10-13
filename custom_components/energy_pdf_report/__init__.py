@@ -612,7 +612,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         display_end,
         bucket,
         timezone,
-    ) = _resolve_period(hass, call_data)
+    ) = _resolve_service_period(hass, call_data)
 
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
@@ -636,18 +636,22 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 )
             else:
                 # Les périodes de comparaison sont converties en fuseau local
-                # puis en UTC, afin de respecter la logique de calcul de
-                # recorder et d'éviter d'inclure le jour suivant.
+                # puis en UTC via _resolve_period pour respecter la logique
+                # du tableau de bord Énergie et exclure la journée suivante.
+                compare_start_utc, compare_end_utc = _resolve_period(
+                    hass, compare_start_date, compare_end_date
+                )
                 compare_start_local = _localize_date(compare_start_date, timezone)
-                compare_end_local = _localize_date(compare_end_date, timezone)
-                compare_end_exclusive = compare_end_local + timedelta(days=1)
+                compare_end_local_exclusive = _localize_date(
+                    compare_end_date + timedelta(days=1), timezone
+                )
                 comparison_period = {
-                    "start": dt_util.as_utc(compare_start_local),
-                    "end": dt_util.as_utc(compare_end_exclusive),
+                    "start": compare_start_utc,
+                    "end": compare_end_utc,
                     "display_start": compare_start_local,
-                    "display_end": compare_end_exclusive - timedelta(seconds=1),
+                    "display_end": compare_end_local_exclusive - timedelta(seconds=1),
                     "bucket": _select_bucket(
-                        period, compare_start_local, compare_end_exclusive
+                        period, compare_start_local, compare_end_local_exclusive
                     ),
                 }
 
@@ -675,11 +679,11 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         )
 
     # Collecte principale des séries statistiques dans le fuseau et la granularité
-    # déterminés par _resolve_period.
+    # déterminés par _resolve_service_period.
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket, timezone
     )
-    totals = _calculate_totals(metrics, stats_result.stats)
+    totals = _calculate_totals(metrics, stats_result.stats, end, timezone)
     primary_context = PeriodStatisticsContext(
         stats=stats_result.stats,
         metadata=stats_result.metadata,
@@ -708,7 +712,12 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 err,
             )
         else:
-            comparison_totals = _calculate_totals(metrics, comparison_stats.stats)
+            comparison_totals = _calculate_totals(
+                metrics,
+                comparison_stats.stats,
+                comparison_period["end"],
+                timezone,
+            )
             comparison_context = PeriodStatisticsContext(
                 stats=comparison_stats.stats,
                 metadata=comparison_stats.metadata,
@@ -1213,7 +1222,7 @@ def _format_dashboard_label(selection: DashboardSelection) -> str | None:
 
 
 
-def _resolve_period(
+def _resolve_service_period(
     hass: HomeAssistant, call_data: dict[str, Any]
 ) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
     """Calculer les dates de début et fin en tenant compte de la granularité."""
@@ -1268,15 +1277,11 @@ def _resolve_period(
         raise HomeAssistantError("La date de fin doit être postérieure à la date de début.")
 
     start_local = _localize_date(start_date, timezone)
+    end_local_exclusive = _localize_date(end_date + timedelta(days=1), timezone)
 
-    # ``end_date`` reste inclusif comme dans le tableau de bord Énergie ;
-    # recorder se charge ensuite de convertir ce point de sortie en borne exclusive.
-    end_local = _localize_date(end_date, timezone)
-    end_local_exclusive = end_local + timedelta(days=1)
+    start_utc, end_utc = _resolve_period(hass, start_date, end_date)
 
-    start_utc = dt_util.as_utc(start_local)
-    end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
-    display_end_local = (end_utc - timedelta(seconds=1)).astimezone(timezone)
+    display_end_local = end_local_exclusive - timedelta(seconds=1)
 
     return (
         start_utc,
@@ -1321,6 +1326,18 @@ def _select_timezone(hass: HomeAssistant) -> tzinfo:
             return timezone
 
     return dt_util.DEFAULT_TIME_ZONE
+
+
+def _resolve_period(
+    hass: HomeAssistant, start_date: date, end_date: date
+) -> tuple[datetime, datetime]:
+    """Convertir une période locale en intervalle UTC exclusif comme le dashboard."""
+
+    timezone = _select_timezone(hass)
+    start_local = _localize_date(start_date, timezone)
+    end_local_exclusive = _localize_date(end_date + timedelta(days=1), timezone)
+
+    return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
 
 
 def _select_bucket(period: str, start_local: datetime, end_local_exclusive: datetime) -> str:
@@ -1955,6 +1972,8 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
+    end: datetime,
+    timezone: tzinfo,
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1969,12 +1988,17 @@ def _calculate_totals(
         has_change = False
 
         for row in rows:
+            if not _row_starts_before(row, end, timezone):
+                continue
 
-            change_value = row.get("change")
+            change_value = _row_value(row, "change")
             if change_value is None:
                 continue
             has_change = True
-            change_total += float(change_value)
+            try:
+                change_total += float(change_value)
+            except (TypeError, ValueError):
+                continue
 
         if has_change:
             totals[statistic_id] = change_total
@@ -2099,7 +2123,7 @@ def _build_pdf(
         translations.cover_period.format(period=period_label),
         # Mention explicite de la granularité des statistiques (jour, heure...).
         # Cette information reflète directement la valeur "bucket" calculée par
-        # _resolve_period et aide à comprendre comment les données ont été agrégées.
+        # _resolve_service_period et aide à comprendre comment les données ont été agrégées.
         translations.cover_bucket.format(bucket=bucket_label),
         translations.cover_stats.format(count=len(metrics)),
         translations.cover_generated.format(
