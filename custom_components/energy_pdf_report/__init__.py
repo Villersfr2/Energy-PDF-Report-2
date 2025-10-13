@@ -1445,6 +1445,64 @@ def _normalize_statistics_map(result: Any) -> dict[str, list[StatisticsRow]] | N
     return None
 
 
+def _parse_row_datetime(value: Any) -> datetime | None:
+    """Convertir une valeur potentielle de date en datetime UTC."""
+
+    candidate: datetime | None
+
+    if isinstance(value, datetime):
+        candidate = value
+    elif isinstance(value, str):
+        candidate = dt_util.parse_datetime(value)
+    else:
+        candidate = None
+
+    if candidate is None:
+        return None
+
+    if candidate.tzinfo is None:
+        return candidate.replace(tzinfo=dt_util.UTC)
+
+    return dt_util.as_utc(candidate)
+
+
+def _row_occurs_before_end(row: Mapping[str, Any], end: datetime) -> bool:
+    """Vérifier que la ligne appartient bien à la période exclusive."""
+
+    start_dt = _parse_row_datetime(row.get("start"))
+    if start_dt is None:
+        start_dt = _parse_row_datetime(row.get("end"))
+
+    if start_dt is None:
+        return True
+
+    return start_dt < end
+
+
+def _filter_statistics_map_by_end(
+    stats_map: Mapping[str, Iterable[StatisticsRow]],
+    end: datetime,
+) -> dict[str, list[StatisticsRow]]:
+    """Exclure les lignes situées après la borne de fin exclusive."""
+
+    filtered: dict[str, list[StatisticsRow]] = {}
+
+    for statistic_id, rows in stats_map.items():
+        if isinstance(rows, list):
+            row_list = rows
+        elif rows:
+            row_list = list(rows)
+        else:
+            row_list = []
+
+        filtered_rows = [
+            row for row in row_list if _row_occurs_before_end(row, end)
+        ]
+        filtered[statistic_id] = filtered_rows
+
+    return filtered
+
+
 async def _async_collect_statistics_via_manager(
     manager: Any,
     hass: HomeAssistant,
@@ -1515,6 +1573,9 @@ async def _collect_statistics(
     stats_map = await _async_collect_statistics_via_manager(
         manager, hass, statistic_ids, start, end, bucket
     )
+
+    if stats_map is not None:
+        stats_map = _filter_statistics_map_by_end(stats_map, end)
 
     try:
         instance = recorder.get_instance(hass)
@@ -1611,6 +1672,11 @@ async def _collect_statistics(
             {"change"},
         )
 
+    if stats_map is None:
+        stats_map = {}
+    else:
+        stats_map = _filter_statistics_map_by_end(stats_map, end)
+
     return StatisticsResult(stats_map, metadata)
 
 
@@ -1645,6 +1711,8 @@ async def _collect_co2_statistics(
         None,
         {"change"},
     )
+
+    stats_map = _filter_statistics_map_by_end(stats_map, end)
 
     for entity_id in statistic_ids:
         rows = stats_map.get(entity_id)
@@ -1698,6 +1766,8 @@ async def _collect_price_statistics(
         None,
         {"change"},
     )
+
+    stats_map = _filter_statistics_map_by_end(stats_map, end)
 
     for entity_id in statistic_ids:
         rows = stats_map.get(entity_id)
