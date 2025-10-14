@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import calendar
+
 import inspect
 import logging
 import secrets
@@ -70,6 +72,7 @@ from .const import (
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_LANGUAGE,
+    DEFAULT_PERIOD,
     DEFAULT_PRICE,
     DEFAULT_PRICE_ELECTRICITY_EXPORT_SENSOR,
     DEFAULT_PRICE_ELECTRICITY_IMPORT_SENSOR,
@@ -234,15 +237,11 @@ def _resolve_base_url(hass: HomeAssistant) -> str | None:
 
     if async_get_url is not None:
         try:
-            # Prefer the helper provided by Home Assistant because it already
-            # takes into account user configuration and reverse proxy rules.
             base_url = async_get_url(hass)
         except HomeAssistantError:
             base_url = None
 
     if not base_url:
-        # Fall back to the configured external/internal URLs.  We iterate so we
-        # can gracefully accept whichever option the user has defined.
         for candidate in (
             getattr(hass.config, "external_url", None),
             getattr(hass.config, "internal_url", None),
@@ -252,8 +251,6 @@ def _resolve_base_url(hass: HomeAssistant) -> str | None:
                 break
 
     if not base_url:
-        # As a last resort, inspect the API object (older HA versions) to
-        # recover a base URL exposed by the HTTP server.
         api = getattr(hass.config, "api", None)
         if api is not None:
             base_url = getattr(api, "base_url", None) or getattr(api, "server_url", None)
@@ -275,7 +272,6 @@ async def _async_resolve_download_url(
     pdf_path_str = str(pdf_path)
 
     if pdf_path_str.startswith(("http://", "https://")):
-        # The caller already produced an absolute URL, return it untouched.
         return pdf_path_str
 
     base_url = _resolve_base_url(hass)
@@ -287,8 +283,6 @@ async def _async_resolve_download_url(
 
     path_obj = Path(pdf_path_str)
     if not path_obj.is_absolute():
-        # Relative paths are resolved from the Home Assistant configuration
-        # directory, matching how the supervisor exposes the filesystem.
         path_obj = Path(hass.config.path(str(path_obj)))
 
     try:
@@ -305,8 +299,6 @@ async def _async_resolve_download_url(
     try:
         relative_path = resolved_path.relative_to(resolved_www)
     except ValueError:
-        # If the file is outside of the www/ directory, there is no public URL
-        # exposed by Home Assistant; the caller must use the filesystem path.
         relative_path = None
 
     if relative_path is None:
@@ -578,8 +570,6 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
 
 
     dashboard_requested: str | None = call.data.get(CONF_DASHBOARD)
-    # Sélectionne le tableau de bord configuré ou le tableau par défaut pour
-    # récupérer la liste des statistiques Energy Dashboard à inclure.
     selection = await _async_select_dashboard_preferences(
         hass, manager, dashboard_requested
     )
@@ -602,24 +592,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     period = str(period_value)
     call_data[CONF_PERIOD] = period
 
-    (
-        start,
-        end,
-        display_start,
-        display_end,
-        bucket,
-        timezone,
-    ) = resolve_reporting_period(hass, call_data)
-
-    _LOGGER.info(
-        "EPR range: %s → %s (UTC) | display %s → %s (local %s) | bucket=%s",
-        start.isoformat(),
-        end.isoformat(),
-        display_start.isoformat(),
-        display_end.isoformat(),
-        timezone,
-        bucket,
-    )
+    start, end, display_start, display_end, bucket = _resolve_period(hass, call_data)
 
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
@@ -642,26 +615,18 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                     "Mode comparaison désactivé: la date de fin de comparaison doit être postérieure à la date de début."
                 )
             else:
-                (
-                    compare_start,
-                    compare_end,
-                    compare_display_start,
-                    compare_display_end,
-                    compare_bucket,
-                    _,
-                ) = resolve_reporting_period(
-                    hass,
-                    {
-                        CONF_START_DATE: compare_start_date,
-                        CONF_END_DATE: compare_end_date,
-                    },
-                )
+                timezone = _select_timezone(hass)
+                compare_start_local = _localize_date(compare_start_date, timezone)
+                compare_end_local = _localize_date(compare_end_date, timezone)
+                compare_end_exclusive = compare_end_local + timedelta(days=1)
                 comparison_period = {
-                    "start": compare_start,
-                    "end": compare_end,
-                    "display_start": compare_display_start,
-                    "display_end": compare_display_end,
-                    "bucket": compare_bucket,
+                    "start": dt_util.as_utc(compare_start_local),
+                    "end": dt_util.as_utc(compare_end_exclusive),
+                    "display_start": compare_start_local,
+                    "display_end": compare_end_exclusive - timedelta(seconds=1),
+                    "bucket": _select_bucket(
+                        period, compare_start_local, compare_end_exclusive
+                    ),
                 }
 
     option_co2_enabled = bool(options.get(CONF_CO2, DEFAULT_CO2))
@@ -675,9 +640,6 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         option_price_enabled if price_override is None else bool(price_override)
     )
 
-    # Construction de la liste des statistiques à collecter avant de lancer
-    # toute requête vers recorder. Les métriques reflètent les cartes actives
-    # du tableau de bord énergie.
     metrics = _build_metrics(preferences, co2_enabled, price_enabled)
     cost_mapping = _build_cost_mapping(preferences)
 
@@ -687,14 +649,10 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             "Aucune statistique n'a été trouvée dans les préférences énergie."
         )
 
-    # Collecte principale des séries statistiques dans le fuseau et la granularité
-    # déterminés par resolve_reporting_period.
     stats_result = await _collect_statistics(
-        hass, manager, metrics, start, end, bucket, timezone
+        hass, manager, metrics, start, end, bucket
     )
-    totals = _calculate_totals(
-        metrics, stats_result.stats, start, end, timezone
-    )
+    totals = _calculate_totals(metrics, stats_result.stats)
     primary_context = PeriodStatisticsContext(
         stats=stats_result.stats,
         metadata=stats_result.metadata,
@@ -715,7 +673,6 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 comparison_period["start"],
                 comparison_period["end"],
                 comparison_period["bucket"],
-                timezone,
             )
         except Exception as err:  # pragma: no cover - defensive logging
             _LOGGER.error(
@@ -723,13 +680,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 err,
             )
         else:
-            comparison_totals = _calculate_totals(
-                metrics,
-                comparison_stats.stats,
-                comparison_period["start"],
-                comparison_period["end"],
-                timezone,
-            )
+            comparison_totals = _calculate_totals(metrics, comparison_stats.stats)
             comparison_context = PeriodStatisticsContext(
                 stats=comparison_stats.stats,
                 metadata=comparison_stats.metadata,
@@ -758,7 +709,6 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             start,
             end,
             co2_definitions,
-            timezone,
         )
 
     price_totals: dict[str, float] = {}
@@ -768,11 +718,8 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             start,
             end,
             price_definitions,
-            timezone,
         )
 
-    # Construction du chemin de sortie final. On accepte un dossier relatif et
-    # on le convertit vers un chemin absolu accessible par Home Assistant.
     output_dir_input = call.data.get(
         CONF_OUTPUT_DIR, options.get(CONF_OUTPUT_DIR, DEFAULT_OUTPUT_DIR)
     )
@@ -1234,103 +1181,60 @@ def _format_dashboard_label(selection: DashboardSelection) -> str | None:
 
 
 
-def resolve_reporting_period(
-    hass: HomeAssistant,
-    call_data: Mapping[str, Any],
-) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
-    """Déterminer l'intervalle exclusif pour le rapport demandé."""
+def _resolve_period(
+    hass: HomeAssistant, call_data: dict[str, Any]
+) -> tuple[datetime, datetime, datetime, datetime, str]:
+    """Calculer les dates de début et fin en tenant compte de la granularité."""
 
-    timezone_name = hass.config.time_zone
-    timezone = dt_util.get_time_zone(timezone_name) if timezone_name else None
-    if timezone is None:
-        timezone = dt_util.DEFAULT_TIME_ZONE
+    period: str = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
+    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
+    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
 
-    raw_start = call_data.get(CONF_START_DATE)
-    raw_end = call_data.get(CONF_END_DATE)
+    now_local = dt_util.now()
 
-    start_date = _coerce_service_date(raw_start, CONF_START_DATE)
-    end_date = _coerce_service_date(raw_end, CONF_END_DATE)
+    if start_date is None:
+        if period == "day":
+            start_date = now_local.date()
+        elif period == "week":
+            start_date = (now_local - timedelta(days=now_local.weekday())).date()
+        elif period == "month":
+            start_date = now_local.replace(day=1).date()
+        else:
+            raise HomeAssistantError("Période non supportée")
 
-    if start_date is not None or end_date is not None:
-        if start_date is None or end_date is None:
-            raise HomeAssistantError(
-                "Les dates de début et de fin doivent être renseignées ensemble ou omises."
-            )
+    if end_date is None:
+        if period == "day":
+            end_date = start_date
+        elif period == "week":
+            end_date = start_date + timedelta(days=6)
+        elif period == "month":
+            _, last_day = calendar.monthrange(start_date.year, start_date.month)
+            end_date = start_date.replace(day=last_day)
+    if end_date is None:
+        end_date = start_date
 
-        if end_date < start_date:
-            raise HomeAssistantError(
-                "La date de fin doit être postérieure ou égale à la date de début."
-            )
+    if end_date < start_date:
+        raise HomeAssistantError("La date de fin doit être postérieure à la date de début.")
 
-        def _localize(day: date) -> datetime:
-            naive = datetime.combine(day, time.min)
-            localize = getattr(timezone, "localize", None)
-            if callable(localize):  # Support pytz
-                return localize(naive)
-            return naive.replace(tzinfo=timezone)
+    timezone = _select_timezone(hass)
 
-        start_local = _localize(start_date)
-        end_local = _localize(end_date)
+    start_local = _localize_date(start_date, timezone)
 
-        display_start_local = start_local
-        display_end_local = end_local.replace(hour=23, minute=59, second=59)
+    # ``end_date`` reste inclusif comme dans le tableau de bord Énergie ;
+    # recorder se charge ensuite de convertir ce point de sortie en borne exclusive.
+    end_local = _localize_date(end_date, timezone)
+    end_local_exclusive = end_local + timedelta(days=1)
 
-        return (
-            dt_util.as_utc(start_local),
-            dt_util.as_utc(end_local) + timedelta(days=1),
-            display_start_local,
-            display_end_local,
-            "day",
-            timezone,
-        )
-
-    raw_period = call_data.get(CONF_PERIOD)
-    if raw_period is None:
-        raise HomeAssistantError(
-            "Aucune période ou plage de dates personnalisée n'a été fournie."
-        )
-
-    period = str(raw_period).strip().lower()
-    supported_periods = {"day", "week", "month", "year"}
-    if period not in supported_periods:
-        raise HomeAssistantError("Période non supportée")
-
-    try:  # Import local pour éviter les erreurs au chargement
-        from homeassistant.components.energy import period_resolver
-    except ImportError as err:  # pragma: no cover - dépend des versions de HA
-        raise HomeAssistantError(
-            "La résolution de période Energy n'est pas disponible sur cette version."
-        ) from err
-
-    try:
-        resolved = period_resolver.resolve(hass, period)
-    except Exception as err:  # pragma: no cover - dépend de HA
-        raise HomeAssistantError("Période non supportée") from err
-
-    start = getattr(resolved, "start", None) or getattr(resolved, "start_utc", None)
-    end = getattr(resolved, "end", None) or getattr(resolved, "end_utc", None)
-    bucket = getattr(resolved, "bucket", None) or getattr(resolved, "granularity", None)
-
-    if start is None or end is None or bucket is None:
-        raise HomeAssistantError(
-            "Impossible de déterminer la période Energy demandée."
-        )
-
-    if start.tzinfo is None or end.tzinfo is None:
-        raise HomeAssistantError(
-            "Les dates de période doivent être des datetime avec fuseau horaire."
-        )
-
-    display_start_local = start.astimezone(timezone)
-    display_end_local = end.astimezone(timezone) - timedelta(seconds=1)
+    start_utc = dt_util.as_utc(start_local)
+    end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
+    display_end = end_local_exclusive - timedelta(seconds=1)
 
     return (
-        start,
-        end,
-        display_start_local,
-        display_end_local,
-        bucket,
-        timezone,
+        start_utc,
+        end_utc,
+        start_local,
+        display_end,
+        _select_bucket(period, start_local, end_local_exclusive),
     )
 
 
@@ -1356,6 +1260,53 @@ def _coerce_service_date(value: Any, field: str) -> date | None:
     raise HomeAssistantError(
         f"Impossible d'interpréter {field} comme une date valide (format attendu YYYY-MM-DD)."
     )
+
+
+def _select_timezone(hass: HomeAssistant) -> tzinfo:
+    """Déterminer le fuseau horaire à utiliser pour les conversions locales."""
+
+    if hass.config.time_zone:
+        timezone = dt_util.get_time_zone(hass.config.time_zone)
+        if timezone is not None:
+            return timezone
+
+    return dt_util.DEFAULT_TIME_ZONE
+
+
+def _select_bucket(period: str, start_local: datetime, end_local_exclusive: datetime) -> str:
+    """Choisir une granularité compatible avec recorder pour la période demandée."""
+
+    normalized = period.lower() if isinstance(period, str) else ""
+
+    if normalized == "day":
+        return "hour"
+
+    if normalized == "week":
+        return "day"
+
+    if normalized == "month":
+        return "day"
+
+    span = end_local_exclusive - start_local
+
+    if span <= timedelta(days=2):
+        return "hour"
+
+    if span <= timedelta(days=35):
+        return "day"
+
+    return "month"
+
+
+def _localize_date(day: date, timezone: tzinfo) -> datetime:
+    """Assembler une date locale en tenant compte des transitions horaires."""
+
+    naive = datetime.combine(day, time.min)
+    localize = getattr(timezone, "localize", None)
+    if callable(localize):  # pytz support
+        return localize(naive)
+    return naive.replace(tzinfo=timezone)
+
 
 
 def _build_metrics(
@@ -1489,234 +1440,6 @@ def _normalize_statistics_map(result: Any) -> dict[str, list[StatisticsRow]] | N
     return None
 
 
-def _parse_row_datetime(value: Any, timezone: tzinfo) -> datetime | None:
-    """Convertir une valeur potentielle de date en datetime UTC."""
-
-    candidate: datetime | None
-
-    if isinstance(value, datetime):
-        candidate = value
-    elif isinstance(value, str):
-        candidate = dt_util.parse_datetime(value)
-    else:
-        candidate = None
-
-    if candidate is None:
-        return None
-
-    if candidate.tzinfo is None:
-        candidate = candidate.replace(tzinfo=timezone)
-
-    return dt_util.as_utc(candidate)
-
-
-def _row_occurs_within_range(
-    row: Mapping[str, Any] | StatisticsRow,
-    start: datetime,
-    end: datetime,
-    timezone: tzinfo,
-) -> bool:
-    """Vérifier que la ligne est strictement comprise dans l'intervalle."""
-
-    start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
-    if start_dt is not None:
-        if start_dt < start or start_dt >= end:
-            return False
-
-    # Certaines lignes (notamment celles provenant de recorder) peuvent ne pas
-    # fournir de champ ``start`` fiable mais exposent une borne ``end``. Dans ce
-    # cas on s'assure que cette borne reste strictement dans l'intervalle exclusif
-    # demandé afin d'éviter d'inclure un jour supplémentaire.
-    end_dt = _parse_row_datetime(_row_value(row, "end"), timezone)
-    if end_dt is not None:
-        if end_dt > end or end_dt <= start:
-            return False
-
-    # Si aucune information n'est disponible, on conserve la ligne pour ne pas
-    # perdre d'échantillon. Les appels en aval re-filtreront éventuellement les
-    # valeurs manquantes.
-    return True
-
-
-def _filter_statistics_map_by_range(
-    stats_map: Mapping[str, Iterable[StatisticsRow]],
-    start: datetime,
-    end: datetime,
-    timezone: tzinfo,
-) -> dict[str, list[StatisticsRow]]:
-    """Exclure les lignes situées en dehors de la période demandée."""
-
-    filtered: dict[str, list[StatisticsRow]] = {}
-
-    for statistic_id, rows in stats_map.items():
-        row_list = _ensure_statistics_list(rows)
-
-        filtered_rows = [
-            row
-            for row in row_list
-            if _row_occurs_within_range(row, start, end, timezone)
-        ]
-        filtered[statistic_id] = filtered_rows
-
-    return filtered
-
-
-def _ensure_statistics_list(
-    rows: Iterable[StatisticsRow] | Iterable[Mapping[str, Any]] | None
-) -> list[StatisticsRow | Mapping[str, Any]]:
-    """Normaliser une collection de statistiques en liste."""
-
-    if isinstance(rows, list):
-        return rows
-
-    if rows is None:
-        return []
-
-    return list(rows)
-
-
-def _row_value(row: Mapping[str, Any] | StatisticsRow, key: str) -> Any:
-    """Extraire une valeur d'une ligne de statistiques."""
-
-    if isinstance(row, Mapping):
-        return row.get(key)
-
-    return getattr(row, key, None)
-
-
-def _extract_row_total(row: Mapping[str, Any] | StatisticsRow) -> float | None:
-    """Récupérer la valeur cumulative utile d'une ligne."""
-
-    for key in ("sum", "state"):
-        value = _row_value(row, key)
-        if value is None:
-            continue
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            continue
-
-    return None
-
-
-def _sum_daily_totals(
-    rows: Iterable[Mapping[str, Any] | StatisticsRow],
-    timezone: tzinfo,
-    start: datetime,
-    end: datetime,
-) -> dict[date, float]:
-    """Construire le total quotidien maximum pour chaque journée locale."""
-
-    daily_max: dict[date, float] = {}
-    daily_changes: defaultdict[date, float] = defaultdict(float)
-
-    for row in rows:
-        if not _row_occurs_within_range(row, start, end, timezone):
-            continue
-
-        start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
-        if start_dt is None:
-            continue
-
-        local_day = start_dt.astimezone(timezone).date()
-        total_value = _extract_row_total(row)
-        if total_value is not None:
-            # Lorsque recorder fournit un champ "sum" ou "state", on utilise le
-            # maximum journalier. Cela correspond à la logique du tableau de bord
-            # énergie qui affiche les totaux cumulés par jour.
-            current = daily_max.get(local_day)
-            if current is None or total_value > current:
-                daily_max[local_day] = total_value
-            continue
-
-        change_value = _row_value(row, "change")
-        if change_value is None:
-            continue
-
-        try:
-            change_total = float(change_value)
-        except (TypeError, ValueError):
-            continue
-
-        # Certaines entités ne fournissent que des changements par pas; on les
-        # additionne par journée locale pour retomber sur un total quotidien.
-        daily_changes[local_day] += change_total
-
-    combined_days = set(daily_max) | set(daily_changes)
-    return {
-        day: (daily_max[day] if day in daily_max else daily_changes[day])
-        for day in combined_days
-    }
-
-
-async def _collect_totals_for_sensors(
-    hass: HomeAssistant,
-    start: datetime,
-    end: datetime,
-    sensors: Iterable[Any],
-    timezone: tzinfo,
-) -> dict[str, float]:
-    """Additionner les totaux journaliers pour une collection de capteurs."""
-
-    definitions = list(sensors)
-    results: dict[str, float] = {
-        definition.translation_key: 0.0 for definition in definitions
-    }
-
-    if not definitions:
-        return results
-
-    instance = recorder.get_instance(hass)
-
-    statistic_ids = [definition.entity_id for definition in definitions]
-
-    # Les totaux sont toujours récupérés avec une granularité quotidienne car
-    # les prix/CO₂ sont exprimés par jour dans le PDF.
-    stats_map = await instance.async_add_executor_job(
-        recorder_statistics.statistics_during_period,
-        hass,
-        start,
-        end,
-        statistic_ids,
-        "day",
-        None,
-        {"sum", "state", "change"},
-    )
-
-    if stats_map is None:
-        stats_map = {}
-    else:
-        stats_map = _filter_statistics_map_by_range(stats_map, start, end, timezone)
-
-    last_local_day = (end - timedelta(seconds=1)).astimezone(timezone).date()
-
-    for definition in definitions:
-        rows_list = _ensure_statistics_list(stats_map.get(definition.entity_id))
-        if not rows_list:
-            continue
-
-        rows_list = [
-            row
-            for row in rows_list
-            if _row_occurs_within_range(row, start, end, timezone)
-        ]
-        if not rows_list:
-            continue
-
-        daily_max_sums = _sum_daily_totals(rows_list, timezone, start, end)
-        if not daily_max_sums:
-            continue
-
-        total = sum(
-            value for day, value in daily_max_sums.items() if day <= last_local_day
-        )
-        # On stocke le total converti dans la clé de traduction, ce qui permet de
-        # réutiliser directement la structure dans pdf.py.
-        results[definition.translation_key] = total
-
-    return results
-
-
 async def _async_collect_statistics_via_manager(
     manager: Any,
     hass: HomeAssistant,
@@ -1777,7 +1500,6 @@ async def _collect_statistics(
     start: datetime,
     end: datetime,
     bucket: str,
-    timezone: tzinfo,
 ) -> StatisticsResult:
     """Récupérer les statistiques depuis recorder."""
 
@@ -1788,11 +1510,6 @@ async def _collect_statistics(
     stats_map = await _async_collect_statistics_via_manager(
         manager, hass, statistic_ids, start, end, bucket
     )
-
-    if stats_map is not None:
-        # Lorsque le gestionnaire énergie répond, on filtre les points hors de
-        # la période demandée (surtout important pour la granularité "day").
-        stats_map = _filter_statistics_map_by_range(stats_map, start, end, timezone)
 
     try:
         instance = recorder.get_instance(hass)
@@ -1875,13 +1592,9 @@ async def _collect_statistics(
                     friendly_name = str(registry_name).strip()
 
         if friendly_name:
-            # Enrichit les métadonnées pour afficher un libellé lisible dans le
-            # PDF. On écrit directement dans le dictionnaire retourné par recorder.
             meta["name"] = friendly_name
 
     if stats_map is None:
-        # Fallback vers recorder lorsque le gestionnaire énergie ne connaît pas
-        # certaines statistiques (ex. entités personnalisées).
         stats_map = await instance.async_add_executor_job(
             recorder_statistics.statistics_during_period,
             hass,
@@ -1893,13 +1606,6 @@ async def _collect_statistics(
             {"change"},
         )
 
-    if stats_map is None:
-        stats_map = {}
-    else:
-        # Même filtre que plus haut pour s'assurer que la dernière journée
-        # exclusive n'est pas incluse.
-        stats_map = _filter_statistics_map_by_range(stats_map, start, end, timezone)
-
     return StatisticsResult(stats_map, metadata)
 
 
@@ -1908,10 +1614,52 @@ async def _collect_co2_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[CO2SensorDefinition],
-    timezone: tzinfo,
 ) -> dict[str, float]:
     """Assembler les totaux CO₂ sur la période demandée."""
-    return await _collect_totals_for_sensors(hass, start, end, sensors, timezone)
+
+    definitions = list(sensors)
+    results: dict[str, float] = {
+        definition.translation_key: 0.0 for definition in definitions
+    }
+
+    if not definitions:
+        return results
+
+    entity_map = {definition.entity_id: definition for definition in definitions}
+    statistic_ids = list(entity_map)
+
+    instance = recorder.get_instance(hass)
+
+    stats_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        statistic_ids,
+        "day",
+        None,
+        {"change"},
+    )
+
+    for entity_id in statistic_ids:
+        rows = stats_map.get(entity_id)
+        if not rows:
+            continue
+
+        total = 0.0
+        has_sum = False
+        for row in rows:
+            change_value = row.get("change")
+            if change_value is None:
+                continue
+            has_sum = True
+            total += float(change_value)
+
+        if has_sum:
+            definition = entity_map[entity_id]
+            results[definition.translation_key] = total
+
+    return results
 
 
 async def _collect_price_statistics(
@@ -1919,10 +1667,52 @@ async def _collect_price_statistics(
     start: datetime,
     end: datetime,
     sensors: Iterable[PriceSensorDefinition],
-    timezone: tzinfo,
 ) -> dict[str, float]:
     """Assembler les totaux financiers sur la période demandée."""
-    return await _collect_totals_for_sensors(hass, start, end, sensors, timezone)
+
+    definitions = list(sensors)
+    results: dict[str, float] = {
+        definition.translation_key: 0.0 for definition in definitions
+    }
+
+    if not definitions:
+        return results
+
+    entity_map = {definition.entity_id: definition for definition in definitions}
+    statistic_ids = list(entity_map)
+
+    instance = recorder.get_instance(hass)
+
+    stats_map = await instance.async_add_executor_job(
+        recorder_statistics.statistics_during_period,
+        hass,
+        start,
+        end,
+        statistic_ids,
+        "day",
+        None,
+        {"change"},
+    )
+
+    for entity_id in statistic_ids:
+        rows = stats_map.get(entity_id)
+        if not rows:
+            continue
+
+        total = 0.0
+        has_sum = False
+        for row in rows:
+            change_value = row.get("change")
+            if change_value is None:
+                continue
+            has_sum = True
+            total += float(change_value)
+
+        if has_sum:
+            definition = entity_map[entity_id]
+            results[definition.translation_key] = total
+
+    return results
 
 
 def _get_recorder_metadata_with_hass(
@@ -1965,9 +1755,6 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
-    start: datetime,
-    end: datetime,
-    timezone: tzinfo,
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1982,17 +1769,12 @@ def _calculate_totals(
         has_change = False
 
         for row in rows:
-            if not _row_occurs_within_range(row, start, end, timezone):
-                continue
 
-            change_value = _row_value(row, "change")
+            change_value = row.get("change")
             if change_value is None:
                 continue
             has_change = True
-            try:
-                change_total += float(change_value)
-            except (TypeError, ValueError):
-                continue
+            change_total += float(change_value)
 
         if has_change:
             totals[statistic_id] = change_total
@@ -2114,10 +1896,8 @@ def _build_pdf(
     price_definitions = tuple(price_definitions)
 
     cover_details = [
+
         translations.cover_period.format(period=period_label),
-        # Mention explicite de la granularité des statistiques (jour, heure...).
-        # Cette information reflète directement la valeur "bucket" calculée par
-        # resolve_reporting_period et aide à comprendre comment les données ont été agrégées.
         translations.cover_bucket.format(bucket=bucket_label),
         translations.cover_stats.format(count=len(metrics)),
         translations.cover_generated.format(
