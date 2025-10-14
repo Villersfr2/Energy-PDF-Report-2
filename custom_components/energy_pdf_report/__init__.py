@@ -641,7 +641,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 timezone = _select_timezone(hass)
                 compare_start_local = _localize_date(compare_start_date, timezone)
                 compare_end_local = _localize_date(compare_end_date, timezone)
-                compare_end_exclusive = compare_end_local + timedelta(days=1)
+                compare_end_exclusive = compare_end_local
                 comparison_period = {
                     "start": dt_util.as_utc(compare_start_local),
                     "end": dt_util.as_utc(compare_end_exclusive),
