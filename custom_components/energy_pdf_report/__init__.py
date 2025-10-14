@@ -1728,7 +1728,13 @@ async def _collect_co2_statistics(
             for row in rows:
                 row_start = row.get("start")
                 if row_start:
-                    row_date = dt_util.as_local(row_start).date()
+                    # CORRECTION: row_start est un timestamp float, le convertir en datetime
+                    if isinstance(row_start, float):
+                        row_start_dt = dt_util.utc_from_timestamp(row_start)
+                    else:
+                        row_start_dt = row_start
+                    
+                    row_date = dt_util.as_local(row_start_dt).date()
                     
                     # Prendre la valeur "state" (valeur instantanée)
                     state_value = row.get("state")
@@ -1837,7 +1843,13 @@ async def _collect_price_statistics(
             for row in rows:
                 row_start = row.get("start")
                 if row_start:
-                    row_date = dt_util.as_local(row_start).date()
+                    # CORRECTION: row_start est un timestamp float, le convertir en datetime
+                    if isinstance(row_start, float):
+                        row_start_dt = dt_util.utc_from_timestamp(row_start)
+                    else:
+                        row_start_dt = row_start
+                    
+                    row_date = dt_util.as_local(row_start_dt).date()
                     
                     # Prendre la valeur "state" (valeur instantanée)
                     state_value = row.get("state")
