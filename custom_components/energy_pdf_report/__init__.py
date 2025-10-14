@@ -17,10 +17,6 @@ from urllib.parse import quote, urljoin
 import voluptuous as vol
 
 from homeassistant.components import persistent_notification, recorder
-try:
-    from homeassistant.components.energy import period_resolver
-except ImportError:  # pragma: no cover - compat anciennes versions
-    period_resolver = None  # type: ignore[assignment]
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder.statistics import StatisticsRow
@@ -74,7 +70,6 @@ from .const import (
     DEFAULT_FILENAME_PATTERN,
     DEFAULT_OUTPUT_DIR,
     DEFAULT_LANGUAGE,
-    DEFAULT_PERIOD,
     DEFAULT_PRICE,
     DEFAULT_PRICE_ELECTRICITY_EXPORT_SENSOR,
     DEFAULT_PRICE_ELECTRICITY_IMPORT_SENSOR,
@@ -1245,18 +1240,16 @@ def resolve_reporting_period(
 ) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
     """Déterminer l'intervalle exclusif pour le rapport demandé."""
 
-    timezone = _select_timezone(hass)
+    timezone_name = hass.config.time_zone
+    timezone = dt_util.get_time_zone(timezone_name) if timezone_name else None
+    if timezone is None:
+        timezone = dt_util.DEFAULT_TIME_ZONE
 
     raw_start = call_data.get(CONF_START_DATE)
     raw_end = call_data.get(CONF_END_DATE)
 
     start_date = _coerce_service_date(raw_start, CONF_START_DATE)
     end_date = _coerce_service_date(raw_end, CONF_END_DATE)
-
-    raw_period = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
-    normalized_period = (
-        str(raw_period).strip().lower() if raw_period is not None else ""
-    ) or DEFAULT_PERIOD
 
     if start_date is not None or end_date is not None:
         if start_date is None or end_date is None:
@@ -1269,55 +1262,71 @@ def resolve_reporting_period(
                 "La date de fin doit être postérieure ou égale à la date de début."
             )
 
-        start_local = _localize_date(start_date, timezone)
-        end_local_exclusive = _localize_date(end_date + timedelta(days=1), timezone)
+        def _localize(day: date) -> datetime:
+            naive = datetime.combine(day, time.min)
+            localize = getattr(timezone, "localize", None)
+            if callable(localize):  # Support pytz
+                return localize(naive)
+            return naive.replace(tzinfo=timezone)
+
+        start_local = _localize(start_date)
+        end_local = _localize(end_date + timedelta(days=1))
 
         display_start_local = start_local
-        display_end_local = end_local_exclusive - timedelta(seconds=1)
+        display_end_local = end_local - timedelta(seconds=1)
 
         return (
             dt_util.as_utc(start_local),
-            dt_util.as_utc(end_local_exclusive),
+            dt_util.as_utc(end_local),
             display_start_local,
             display_end_local,
             "day",
             timezone,
         )
 
-    if period_resolver is None:
+    raw_period = call_data.get(CONF_PERIOD)
+    if raw_period is None:
         raise HomeAssistantError(
-            "La version actuelle de Home Assistant ne supporte pas la résolution de période Energy."
+            "Aucune période ou plage de dates personnalisée n'a été fournie."
         )
 
+    period = str(raw_period).strip().lower()
+    supported_periods = {"day", "week", "month", "year"}
+    if period not in supported_periods:
+        raise HomeAssistantError("Période non supportée")
+
+    try:  # Import local pour éviter les erreurs au chargement
+        from homeassistant.components.energy import period_resolver
+    except ImportError as err:  # pragma: no cover - dépend des versions de HA
+        raise HomeAssistantError(
+            "La résolution de période Energy n'est pas disponible sur cette version."
+        ) from err
+
     try:
-        resolved = period_resolver.resolve(hass, normalized_period)
+        resolved = period_resolver.resolve(hass, period)
     except Exception as err:  # pragma: no cover - dépend de HA
         raise HomeAssistantError("Période non supportée") from err
 
-    start_utc = getattr(resolved, "start", None) or getattr(
-        resolved, "start_utc", None
-    )
-    end_utc = getattr(resolved, "end", None) or getattr(resolved, "end_utc", None)
-    bucket = getattr(resolved, "bucket", None) or getattr(
-        resolved, "granularity", None
-    )
+    start = getattr(resolved, "start", None) or getattr(resolved, "start_utc", None)
+    end = getattr(resolved, "end", None) or getattr(resolved, "end_utc", None)
+    bucket = getattr(resolved, "bucket", None) or getattr(resolved, "granularity", None)
 
-    if start_utc is None or end_utc is None or bucket is None:
+    if start is None or end is None or bucket is None:
         raise HomeAssistantError(
             "Impossible de déterminer la période Energy demandée."
         )
 
-    if start_utc.tzinfo is None or end_utc.tzinfo is None:
+    if start.tzinfo is None or end.tzinfo is None:
         raise HomeAssistantError(
             "Les dates de période doivent être des datetime avec fuseau horaire."
         )
 
-    display_start_local = start_utc.astimezone(timezone)
-    display_end_local = end_utc.astimezone(timezone) - timedelta(seconds=1)
+    display_start_local = start.astimezone(timezone)
+    display_end_local = end.astimezone(timezone) - timedelta(seconds=1)
 
     return (
-        start_utc,
-        end_utc,
+        start,
+        end,
         display_start_local,
         display_end_local,
         bucket,
@@ -1347,28 +1356,6 @@ def _coerce_service_date(value: Any, field: str) -> date | None:
     raise HomeAssistantError(
         f"Impossible d'interpréter {field} comme une date valide (format attendu YYYY-MM-DD)."
     )
-
-
-def _select_timezone(hass: HomeAssistant) -> tzinfo:
-    """Déterminer le fuseau horaire à utiliser pour les conversions locales."""
-
-    if hass.config.time_zone:
-        timezone = dt_util.get_time_zone(hass.config.time_zone)
-        if timezone is not None:
-            return timezone
-
-    return dt_util.DEFAULT_TIME_ZONE
-
-
-def _localize_date(day: date, timezone: tzinfo) -> datetime:
-    """Assembler une date locale en tenant compte des transitions horaires."""
-
-    naive = datetime.combine(day, time.min)
-    localize = getattr(timezone, "localize", None)
-    if callable(localize):  # pytz support
-        return localize(naive)
-    return naive.replace(tzinfo=timezone)
-
 
 
 def _build_metrics(
