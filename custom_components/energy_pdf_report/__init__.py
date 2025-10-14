@@ -563,6 +563,29 @@ def _domain_has_config_entries(domain_data: dict[str, Any]) -> bool:
     return bool(_active_entry_ids(domain_data))
 
 
+def _determine_statistic_type(metadata: tuple[int, StatisticMetaData] | None) -> str:
+    """Déterminer le type de statistique basé sur les métadonnées."""
+    if not metadata:
+        return "unknown"
+    
+    meta = metadata[1]
+    state_class = meta.get("state_class", "")
+    
+    if state_class in ("total_increasing", "total"):
+        return "total_increasing"
+    elif state_class == "measurement":
+        return "measurement"
+    else:
+        # Essayer de déduire du statistic_id
+        statistic_id = meta.get("statistic_id", "").lower()
+        if any(keyword in statistic_id for keyword in ["_energy_", "_power_", "kwh", "wh"]):
+            return "total_increasing"
+        elif any(keyword in statistic_id for keyword in ["_co2", "_price", "_cost", "€", "$"]):
+            return "total_increasing"
+        else:
+            return "measurement"
+
+
 async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None:
     """Exécuter la génération d'un rapport PDF."""
 
@@ -652,7 +675,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket
     )
-    totals = _calculate_totals(metrics, stats_result.stats, stats_result.metadata)  # MODIFIÉ: ajout de metadata
+    totals = _calculate_totals(metrics, stats_result.stats, stats_result.metadata)
     primary_context = PeriodStatisticsContext(
         stats=stats_result.stats,
         metadata=stats_result.metadata,
@@ -680,7 +703,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 err,
             )
         else:
-            comparison_totals = _calculate_totals(metrics, comparison_stats.stats, comparison_stats.metadata)  # MODIFIÉ: ajout de metadata
+            comparison_totals = _calculate_totals(metrics, comparison_stats.stats, comparison_stats.metadata)
             comparison_context = PeriodStatisticsContext(
                 stats=comparison_stats.stats,
                 metadata=comparison_stats.metadata,
@@ -1627,37 +1650,88 @@ async def _collect_co2_statistics(
         return results
 
     entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
-
+    
+    # Récupérer les métadonnées pour déterminer le state_class
     instance = recorder.get_instance(hass)
+    metadata_requires_hass = _recorder_metadata_requires_hass()
+    
+    try:
+        if metadata_requires_hass:
+            metadata = await instance.async_add_executor_job(
+                _get_recorder_metadata_with_hass,
+                hass,
+                set(entity_map.keys()),
+            )
+        else:
+            metadata = await instance.async_add_executor_job(
+                recorder_statistics.get_metadata,
+                set(entity_map.keys()),
+            )
+    except Exception as err:
+        _LOGGER.warning("Erreur lors de la récupération des métadonnées CO2: %s", err)
+        metadata = {}
 
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
         start,
         end,
-        statistic_ids,
+        list(entity_map.keys()),
         "day",
         None,
-        {"change"},
+        {"change", "sum"},  # Récupérer les deux pour plus de flexibilité
     )
 
-    for entity_id in statistic_ids:
+    for entity_id, definition in entity_map.items():
         rows = stats_map.get(entity_id)
         if not rows:
             continue
 
-        total = 0.0
-        has_sum = False
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_sum = True
-            total += float(change_value)
+        # Déterminer le type de capteur
+        meta_entry = metadata.get(entity_id)
+        state_class = None
+        if meta_entry:
+            state_class = meta_entry[1].get("state_class")
+        
+        is_total_increasing = state_class in ("total_increasing", "total") or state_class is None
 
-        if has_sum:
-            definition = entity_map[entity_id]
+        total = 0.0
+        has_data = False
+
+        if is_total_increasing:
+            # Méthode par somme des changes
+            for row in rows:
+                change_value = row.get("change")
+                if change_value is not None:
+                    has_data = True
+                    total += float(change_value)
+            
+            if not has_data:
+                # Fallback: différence entre premier et dernier sum
+                sum_values = []
+                for row in rows:
+                    sum_value = row.get("sum")
+                    if sum_value is not None:
+                        sum_values.append((row["start"], float(sum_value)))
+                
+                if len(sum_values) >= 2:
+                    sum_values.sort(key=lambda x: x[0])
+                    first_sum = sum_values[0][1]
+                    last_sum = sum_values[-1][1]
+                    total = last_sum - first_sum
+                    has_data = True
+                elif len(sum_values) == 1:
+                    total = sum_values[0][1]
+                    has_data = True
+        else:
+            # Pour les autres types, on utilise aussi la somme des changes
+            for row in rows:
+                change_value = row.get("change")
+                if change_value is not None:
+                    has_data = True
+                    total += float(change_value)
+
+        if has_data:
             results[definition.translation_key] = total
 
     return results
@@ -1680,37 +1754,88 @@ async def _collect_price_statistics(
         return results
 
     entity_map = {definition.entity_id: definition for definition in definitions}
-    statistic_ids = list(entity_map)
-
+    
+    # Récupérer les métadonnées
     instance = recorder.get_instance(hass)
+    metadata_requires_hass = _recorder_metadata_requires_hass()
+    
+    try:
+        if metadata_requires_hass:
+            metadata = await instance.async_add_executor_job(
+                _get_recorder_metadata_with_hass,
+                hass,
+                set(entity_map.keys()),
+            )
+        else:
+            metadata = await instance.async_add_executor_job(
+                recorder_statistics.get_metadata,
+                set(entity_map.keys()),
+            )
+    except Exception as err:
+        _LOGGER.warning("Erreur lors de la récupération des métadonnées prix: %s", err)
+        metadata = {}
 
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
         start,
         end,
-        statistic_ids,
+        list(entity_map.keys()),
         "day",
         None,
-        {"change"},
+        {"change", "sum"},
     )
 
-    for entity_id in statistic_ids:
+    for entity_id, definition in entity_map.items():
         rows = stats_map.get(entity_id)
         if not rows:
             continue
 
-        total = 0.0
-        has_sum = False
-        for row in rows:
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_sum = True
-            total += float(change_value)
+        # Déterminer le type de capteur
+        meta_entry = metadata.get(entity_id)
+        state_class = None
+        if meta_entry:
+            state_class = meta_entry[1].get("state_class")
+        
+        is_total_increasing = state_class in ("total_increasing", "total") or state_class is None
 
-        if has_sum:
-            definition = entity_map[entity_id]
+        total = 0.0
+        has_data = False
+
+        if is_total_increasing:
+            # Méthode par somme des changes
+            for row in rows:
+                change_value = row.get("change")
+                if change_value is not None:
+                    has_data = True
+                    total += float(change_value)
+            
+            if not has_data:
+                # Fallback: différence entre premier et dernier sum
+                sum_values = []
+                for row in rows:
+                    sum_value = row.get("sum")
+                    if sum_value is not None:
+                        sum_values.append((row["start"], float(sum_value)))
+                
+                if len(sum_values) >= 2:
+                    sum_values.sort(key=lambda x: x[0])
+                    first_sum = sum_values[0][1]
+                    last_sum = sum_values[-1][1]
+                    total = last_sum - first_sum
+                    has_data = True
+                elif len(sum_values) == 1:
+                    total = sum_values[0][1]
+                    has_data = True
+        else:
+            # Pour les autres types, on utilise aussi la somme des changes
+            for row in rows:
+                change_value = row.get("change")
+                if change_value is not None:
+                    has_data = True
+                    total += float(change_value)
+
+        if has_data:
             results[definition.translation_key] = total
 
     return results
@@ -1756,7 +1881,7 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
-    metadata: dict[str, tuple[int, StatisticMetaData]]  # MODIFIÉ: ajout du paramètre metadata
+    metadata: dict[str, tuple[int, StatisticMetaData]]
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1766,16 +1891,10 @@ def _calculate_totals(
         if not rows:
             continue
 
-        # Déterminer le type de statistique depuis les métadonnées
-        meta_entry = metadata.get(statistic_id)
-        state_class = None
-        if meta_entry:
-            state_class = meta_entry[1].get("state_class")
+        stat_type = _determine_statistic_type(metadata.get(statistic_id))
         
-        is_total_increasing = state_class == "total_increasing"
-
-        if is_total_increasing:
-            # Cas total_increasing : somme des changes
+        if stat_type == "total_increasing":
+            # Priorité: somme des changes
             change_total = 0.0
             has_change = False
             for row in rows:
@@ -1786,24 +1905,47 @@ def _calculate_totals(
             
             if has_change:
                 totals[statistic_id] = change_total
+            else:
+                # Fallback: différence entre premier et dernier sum
+                sum_values = []
+                for row in rows:
+                    sum_value = row.get("sum")
+                    if sum_value is not None:
+                        sum_values.append((row["start"], float(sum_value)))
+                
+                if len(sum_values) >= 2:
+                    sum_values.sort(key=lambda x: x[0])
+                    first_sum = sum_values[0][1]
+                    last_sum = sum_values[-1][1]
+                    totals[statistic_id] = last_sum - first_sum
+                elif len(sum_values) == 1:
+                    totals[statistic_id] = sum_values[0][1]
 
-        else:
-            # Cas total (ou measurement) : différence entre premier et dernier sum
-            sum_values = []
+        else:  # measurement ou unknown
+            # Utiliser la moyenne des states ou somme des changes
+            change_total = 0.0
+            has_change = False
             for row in rows:
-                sum_value = row.get("sum")
-                if sum_value is not None:
-                    sum_values.append((row["start"], float(sum_value)))
+                change_value = row.get("change")
+                if change_value is not None:
+                    has_change = True
+                    change_total += float(change_value)
             
-            if len(sum_values) >= 2:
-                # Trier par date et calculer la différence
-                sum_values.sort(key=lambda x: x[0])
-                first_sum = sum_values[0][1]
-                last_sum = sum_values[-1][1]
-                totals[statistic_id] = last_sum - first_sum
-            elif len(sum_values) == 1:
-                # Une seule valeur, consommation = 0 ou la valeur actuelle
-                totals[statistic_id] = 0.0
+            if has_change:
+                totals[statistic_id] = change_total
+            else:
+                # Dernier recours: moyenne des states
+                state_values = []
+                for row in rows:
+                    state = row.get("state")
+                    if state is not None:
+                        try:
+                            state_values.append(float(state))
+                        except (TypeError, ValueError):
+                            continue
+                
+                if state_values:
+                    totals[statistic_id] = sum(state_values)
 
     return totals
 
@@ -2430,7 +2572,7 @@ def _prepare_conclusion_summary(
 def _render_conclusion_overview(
     translations: ReportTranslations, summary: ConclusionSummary
 ) -> str:
-    """Construire le paragraphe de conclusion affiché et envoyé à l’IA."""
+    """Construire le paragraphe de conclusion affiché et envoyé à l'IA."""
 
     formatted = summary.formatted
 
@@ -2583,7 +2725,7 @@ def _compose_conclusion_prompt(
     summary: ConclusionSummary | None,
     comparison_insight: str | None = None,
 ) -> str:
-    """Assembler un texte descriptif passé à l’IA pour générer un conseil."""
+    """Assembler un texte descriptif passé à l'IA pour générer un conseil."""
 
     comparison_insight = _deduplicate_insight_text(comparison_insight)
 
