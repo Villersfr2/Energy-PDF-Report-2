@@ -1296,8 +1296,7 @@ def _resolve_period(
 
     timezone = _select_timezone(hass)
 
-    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
-    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
+    normalized_period = (period or "").strip().lower() or None
 
     start_utc, end_utc = resolve_reporting_period(hass, period, start_date, end_date)
 
@@ -1310,6 +1309,23 @@ def _resolve_period(
         end_local_exclusive = end_utc.astimezone(timezone)
         display_start_local = start_local
 
+def _resolve_period(
+    hass: HomeAssistant, call_data: dict[str, Any]
+) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
+    """Calculer les dates de début et fin en tenant compte de la granularité."""
+
+    raw_period = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
+    period = str(raw_period) if raw_period is not None else DEFAULT_PERIOD
+
+    timezone = _select_timezone(hass)
+
+    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
+    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
+
+    start_utc, end_utc = resolve_reporting_period(hass, period, start_date, end_date)
+
+    start_local = start_utc.astimezone(timezone)
+    end_local_exclusive = end_utc.astimezone(timezone)
     display_end_local = end_local_exclusive - timedelta(seconds=1)
 
     bucket_period = period if start_date is None and end_date is None else "custom"
