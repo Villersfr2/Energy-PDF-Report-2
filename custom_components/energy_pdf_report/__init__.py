@@ -694,7 +694,9 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket, timezone
     )
-    totals = _calculate_totals(metrics, stats_result.stats, end, timezone)
+    totals = _calculate_totals(
+        metrics, stats_result.stats, start, end, timezone
+    )
     primary_context = PeriodStatisticsContext(
         stats=stats_result.stats,
         metadata=stats_result.metadata,
@@ -726,6 +728,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
             comparison_totals = _calculate_totals(
                 metrics,
                 comparison_stats.stats,
+                comparison_period["start"],
                 comparison_period["end"],
                 timezone,
             )
@@ -1306,6 +1309,12 @@ def _resolve_period(
 
     timezone = _select_timezone(hass)
 
+    start_date_raw = call_data.get(CONF_START_DATE)
+    end_date_raw = call_data.get(CONF_END_DATE)
+
+    start_date = _coerce_service_date(start_date_raw, CONF_START_DATE)
+    end_date = _coerce_service_date(end_date_raw, CONF_END_DATE)
+
     normalized_period = (period or "").strip().lower() or None
 
     start_utc, end_utc = resolve_reporting_period(hass, period, start_date, end_date)
@@ -1321,8 +1330,6 @@ def _resolve_period(
 
     display_start_local = start_local
     display_end_local = end_local_exclusive - timedelta(seconds=1)
-
-    bucket_period = period if start_date is None and end_date is None else "custom"
 
     return (
         start_utc,
@@ -1560,22 +1567,27 @@ def _parse_row_datetime(value: Any, timezone: tzinfo) -> datetime | None:
     return dt_util.as_utc(candidate)
 
 
-def _row_occurs_before_end(
-    row: Mapping[str, Any] | StatisticsRow, end: datetime, timezone: tzinfo
+def _row_occurs_within_range(
+    row: Mapping[str, Any] | StatisticsRow,
+    start: datetime,
+    end: datetime,
+    timezone: tzinfo,
 ) -> bool:
-    """Vérifier que la ligne appartient bien à la période exclusive."""
+    """Vérifier que la ligne est strictement comprise dans l'intervalle."""
 
     start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
-    if start_dt is not None and start_dt >= end:
-        return False
+    if start_dt is not None:
+        if start_dt < start or start_dt >= end:
+            return False
 
     # Certaines lignes (notamment celles provenant de recorder) peuvent ne pas
     # fournir de champ ``start`` fiable mais exposent une borne ``end``. Dans ce
-    # cas on s'assure que cette borne reste strictement avant la fin exclusive
-    # demandée afin d'éviter d'inclure la journée suivante.
+    # cas on s'assure que cette borne reste strictement dans l'intervalle exclusif
+    # demandé afin d'éviter d'inclure un jour supplémentaire.
     end_dt = _parse_row_datetime(_row_value(row, "end"), timezone)
-    if end_dt is not None and end_dt > end:
-        return False
+    if end_dt is not None:
+        if end_dt > end or end_dt <= start:
+            return False
 
     # Si aucune information n'est disponible, on conserve la ligne pour ne pas
     # perdre d'échantillon. Les appels en aval re-filtreront éventuellement les
@@ -1583,12 +1595,13 @@ def _row_occurs_before_end(
     return True
 
 
-def _filter_statistics_map_by_end(
+def _filter_statistics_map_by_range(
     stats_map: Mapping[str, Iterable[StatisticsRow]],
+    start: datetime,
     end: datetime,
     timezone: tzinfo,
 ) -> dict[str, list[StatisticsRow]]:
-    """Exclure les lignes situées après la borne de fin exclusive."""
+    """Exclure les lignes situées en dehors de la période demandée."""
 
     filtered: dict[str, list[StatisticsRow]] = {}
 
@@ -1596,7 +1609,9 @@ def _filter_statistics_map_by_end(
         row_list = _ensure_statistics_list(rows)
 
         filtered_rows = [
-            row for row in row_list if _row_occurs_before_end(row, end, timezone)
+            row
+            for row in row_list
+            if _row_occurs_within_range(row, start, end, timezone)
         ]
         filtered[statistic_id] = filtered_rows
 
@@ -1644,6 +1659,7 @@ def _extract_row_total(row: Mapping[str, Any] | StatisticsRow) -> float | None:
 def _sum_daily_totals(
     rows: Iterable[Mapping[str, Any] | StatisticsRow],
     timezone: tzinfo,
+    start: datetime,
     end: datetime,
 ) -> dict[date, float]:
     """Construire le total quotidien maximum pour chaque journée locale."""
@@ -1652,7 +1668,7 @@ def _sum_daily_totals(
     daily_changes: defaultdict[date, float] = defaultdict(float)
 
     for row in rows:
-        if not _row_occurs_before_end(row, end, timezone):
+        if not _row_occurs_within_range(row, start, end, timezone):
             continue
 
         start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
@@ -1727,7 +1743,7 @@ async def _collect_totals_for_sensors(
     if stats_map is None:
         stats_map = {}
     else:
-        stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
+        stats_map = _filter_statistics_map_by_range(stats_map, start, end, timezone)
 
     last_local_day = (end - timedelta(seconds=1)).astimezone(timezone).date()
 
@@ -1737,12 +1753,14 @@ async def _collect_totals_for_sensors(
             continue
 
         rows_list = [
-            row for row in rows_list if _row_occurs_before_end(row, end, timezone)
+            row
+            for row in rows_list
+            if _row_occurs_within_range(row, start, end, timezone)
         ]
         if not rows_list:
             continue
 
-        daily_max_sums = _sum_daily_totals(rows_list, timezone, end)
+        daily_max_sums = _sum_daily_totals(rows_list, timezone, start, end)
         if not daily_max_sums:
             continue
 
@@ -1831,7 +1849,7 @@ async def _collect_statistics(
     if stats_map is not None:
         # Lorsque le gestionnaire énergie répond, on filtre les points hors de
         # la période demandée (surtout important pour la granularité "day").
-        stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
+        stats_map = _filter_statistics_map_by_range(stats_map, start, end, timezone)
 
     try:
         instance = recorder.get_instance(hass)
@@ -1937,7 +1955,7 @@ async def _collect_statistics(
     else:
         # Même filtre que plus haut pour s'assurer que la dernière journée
         # exclusive n'est pas incluse.
-        stats_map = _filter_statistics_map_by_end(stats_map, end, timezone)
+        stats_map = _filter_statistics_map_by_range(stats_map, start, end, timezone)
 
     return StatisticsResult(stats_map, metadata)
 
@@ -2004,6 +2022,7 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
+    start: datetime,
     end: datetime,
     timezone: tzinfo,
 ) -> dict[str, float]:
@@ -2020,7 +2039,7 @@ def _calculate_totals(
         has_change = False
 
         for row in rows:
-            if not _row_occurs_before_end(row, end, timezone):
+            if not _row_occurs_within_range(row, start, end, timezone):
                 continue
 
             change_value = _row_value(row, "change")
