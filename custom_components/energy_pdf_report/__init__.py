@@ -1279,7 +1279,7 @@ def _resolve_period(
 
     start_utc = dt_util.as_utc(start_local)
     end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
-    display_end = end_local_exclusive - timedelta(seconds=1)
+    display_end = end_local_exclusive
 
     return (
         start_utc,
