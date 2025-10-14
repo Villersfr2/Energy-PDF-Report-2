@@ -1194,11 +1194,12 @@ def _resolve_period(
 
     if start_date is None:
         if period == "day":
-            start_date = now_local.date()
+            start_date = (now_local - timedelta(days=1)).date()
         elif period == "week":
-            start_date = (now_local - timedelta(days=now_local.weekday())).date()
+            start_date = (now_local - timedelta(days=now_local.weekday() + 7)).date()
         elif period == "month":
-            start_date = now_local.replace(day=1).date()
+            first_of_current_month = now_local.replace(day=1)
+            start_date = (first_of_current_month - timedelta(days=1)).replace(day=1).date()
         else:
             raise HomeAssistantError("Période non supportée")
 
