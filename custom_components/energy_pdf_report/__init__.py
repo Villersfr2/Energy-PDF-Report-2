@@ -1306,8 +1306,7 @@ def _resolve_period(
 
     timezone = _select_timezone(hass)
 
-    start_date = _coerce_service_date(call_data.get(CONF_START_DATE), CONF_START_DATE)
-    end_date = _coerce_service_date(call_data.get(CONF_END_DATE), CONF_END_DATE)
+    normalized_period = (period or "").strip().lower() or None
 
     start_utc, end_utc = resolve_reporting_period(hass, period, start_date, end_date)
 
@@ -1322,6 +1321,8 @@ def _resolve_period(
 
     display_start_local = start_local
     display_end_local = end_local_exclusive - timedelta(seconds=1)
+
+    bucket_period = period if start_date is None and end_date is None else "custom"
 
     return (
         start_utc,
