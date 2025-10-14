@@ -674,7 +674,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                     "start": dt_util.as_utc(compare_start_local),
                     "end": dt_util.as_utc(compare_end_exclusive),
                     "display_start": compare_start_local,
-                    "display_end": compare_end_exclusive - timedelta(seconds=1),
+                    "display_end": compare_end_exclusive,
                     "bucket": _select_bucket(
                         period, compare_start_local, compare_end_exclusive
                     ),
