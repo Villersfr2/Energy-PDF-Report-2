@@ -612,6 +612,16 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         timezone,
     ) = _resolve_period(hass, call_data)
 
+    _LOGGER.info(
+        "EPR range: %s → %s (UTC) | display %s → %s (local %s) | bucket=%s",
+        start.isoformat(),
+        end.isoformat(),
+        display_start.isoformat(),
+        display_end.isoformat(),
+        timezone,
+        bucket,
+    )
+
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
         try:
@@ -1303,9 +1313,11 @@ def _resolve_period(
     if start_date is not None and end_date is not None:
         start_local = _localize_date(start_date, timezone)
         end_local_exclusive = _localize_date(end_date + timedelta(days=1), timezone)
+        bucket_period = "custom"
     else:
         start_local = start_utc.astimezone(timezone)
         end_local_exclusive = end_utc.astimezone(timezone)
+        bucket_period = period
 
     display_start_local = start_local
     display_end_local = end_local_exclusive - timedelta(seconds=1)
