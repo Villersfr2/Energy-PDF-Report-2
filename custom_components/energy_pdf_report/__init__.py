@@ -229,6 +229,16 @@ def _set_recorder_metadata_requires_hass(value: bool) -> None:
     _RECORDER_METADATA_REQUIRES_HASS = value
 
 
+def _get_entity_state_class(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Récupérer le state_class d'une entité."""
+    try:
+        state = hass.states.get(entity_id)
+        if state and state.attributes:
+            return state.attributes.get("state_class")
+    except Exception:
+        pass
+    return None
+
 
 def _resolve_base_url(hass: HomeAssistant) -> str | None:
     """Determine the best base URL available for the instance."""
@@ -566,24 +576,42 @@ def _domain_has_config_entries(domain_data: dict[str, Any]) -> bool:
 def _determine_statistic_type(metadata: tuple[int, StatisticMetaData] | None) -> str:
     """Déterminer le type de statistique basé sur les métadonnées."""
     if not metadata:
-        return "unknown"
+        return "total_increasing"  # Par défaut safe
     
     meta = metadata[1]
-    state_class = meta.get("state_class", "")
     
-    if state_class in ("total_increasing", "total"):
+    # Récupérer les informations disponibles
+    statistic_id = meta.get("statistic_id", "").lower()
+    unit = meta.get("unit_of_measurement", "").lower()
+    
+    # DÉTECTION AUTOMATIQUE
+    
+    # Unités qui indiquent des totaux cumulatifs
+    total_units = ["kwh", "wh", "mwh", "€", "$", "eur", "usd", "kg", "kgco2", "co2"]
+    
+    # Motifs dans les IDs qui indiquent des totaux
+    total_patterns = [
+        "_energy_", "_power_", "energy", "power", 
+        "consumption", "production", "import", "export",
+        "_cost", "_price", "cost", "price",
+        "_co2", "co2", "carbon", "emission"
+    ]
+    
+    # Vérifier l'unité
+    for total_unit in total_units:
+        if total_unit in unit:
+            return "total_increasing"
+    
+    # Vérifier les motifs dans l'ID
+    for pattern in total_patterns:
+        if pattern in statistic_id:
+            return "total_increasing"
+    
+    # Si c'est une statistique du dashboard énergie, c'est très probablement un total
+    if any(keyword in statistic_id for keyword in ["sensor.", "statistics."]):
         return "total_increasing"
-    elif state_class == "measurement":
-        return "measurement"
-    else:
-        # Essayer de déduire du statistic_id
-        statistic_id = meta.get("statistic_id", "").lower()
-        if any(keyword in statistic_id for keyword in ["_energy_", "_power_", "kwh", "wh"]):
-            return "total_increasing"
-        elif any(keyword in statistic_id for keyword in ["_co2", "_price", "_cost", "€", "$"]):
-            return "total_increasing"
-        else:
-            return "measurement"
+    
+    return "measurement"
 
 
 async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -1651,26 +1679,15 @@ async def _collect_co2_statistics(
 
     entity_map = {definition.entity_id: definition for definition in definitions}
     
-    # Récupérer les métadonnées pour déterminer le state_class
-    instance = recorder.get_instance(hass)
-    metadata_requires_hass = _recorder_metadata_requires_hass()
-    
-    try:
-        if metadata_requires_hass:
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                set(entity_map.keys()),
-            )
-        else:
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                set(entity_map.keys()),
-            )
-    except Exception as err:
-        _LOGGER.warning("Erreur lors de la récupération des métadonnées CO2: %s", err)
-        metadata = {}
+    # Récupérer les state_class des entités
+    entity_state_classes = {}
+    for entity_id in entity_map.keys():
+        state_class = _get_entity_state_class(hass, entity_id)
+        entity_state_classes[entity_id] = state_class
+        _LOGGER.debug("🔍 CO2 %s: state_class=%s", entity_id, state_class)
 
+    instance = recorder.get_instance(hass)
+    
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
@@ -1679,7 +1696,7 @@ async def _collect_co2_statistics(
         list(entity_map.keys()),
         "day",
         None,
-        {"change", "sum"},  # Récupérer les deux pour plus de flexibilité
+        {"change", "sum"},
     )
 
     for entity_id, definition in entity_map.items():
@@ -1687,19 +1704,15 @@ async def _collect_co2_statistics(
         if not rows:
             continue
 
-        # Déterminer le type de capteur
-        meta_entry = metadata.get(entity_id)
-        state_class = None
-        if meta_entry:
-            state_class = meta_entry[1].get("state_class")
-        
-        is_total_increasing = state_class in ("total_increasing", "total") or state_class is None
+        # DÉTERMINER LA MÉTHODE DE CALCUL BASÉE SUR LE STATE_CLASS
+        state_class = entity_state_classes.get(entity_id)
+        is_total_increasing = state_class in ("total_increasing", "total")
 
         total = 0.0
         has_data = False
 
         if is_total_increasing:
-            # Méthode par somme des changes
+            # Méthode pour total_increasing/total : somme des changes
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
@@ -1720,19 +1733,27 @@ async def _collect_co2_statistics(
                     last_sum = sum_values[-1][1]
                     total = last_sum - first_sum
                     has_data = True
+                    _LOGGER.debug("📊 CO2 %s: méthode sum diff = %f", entity_id, total)
                 elif len(sum_values) == 1:
                     total = sum_values[0][1]
                     has_data = True
+                    _LOGGER.debug("📊 CO2 %s: méthode sum single = %f", entity_id, total)
         else:
-            # Pour les autres types, on utilise aussi la somme des changes
+            # Pour measurement ou unknown : somme des changes aussi (meilleur fallback)
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
                     has_data = True
                     total += float(change_value)
+            
+            if has_data:
+                _LOGGER.debug("📊 CO2 %s: méthode change (measurement) = %f", entity_id, total)
 
         if has_data:
             results[definition.translation_key] = total
+            _LOGGER.debug("✅ CO2 %s: résultat final = %f", entity_id, total)
+        else:
+            _LOGGER.warning("❌ CO2 %s: aucune donnée trouvée", entity_id)
 
     return results
 
@@ -1755,26 +1776,15 @@ async def _collect_price_statistics(
 
     entity_map = {definition.entity_id: definition for definition in definitions}
     
-    # Récupérer les métadonnées
-    instance = recorder.get_instance(hass)
-    metadata_requires_hass = _recorder_metadata_requires_hass()
-    
-    try:
-        if metadata_requires_hass:
-            metadata = await instance.async_add_executor_job(
-                _get_recorder_metadata_with_hass,
-                hass,
-                set(entity_map.keys()),
-            )
-        else:
-            metadata = await instance.async_add_executor_job(
-                recorder_statistics.get_metadata,
-                set(entity_map.keys()),
-            )
-    except Exception as err:
-        _LOGGER.warning("Erreur lors de la récupération des métadonnées prix: %s", err)
-        metadata = {}
+    # Récupérer les state_class des entités
+    entity_state_classes = {}
+    for entity_id in entity_map.keys():
+        state_class = _get_entity_state_class(hass, entity_id)
+        entity_state_classes[entity_id] = state_class
+        _LOGGER.debug("🔍 Prix %s: state_class=%s", entity_id, state_class)
 
+    instance = recorder.get_instance(hass)
+    
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
@@ -1791,19 +1801,15 @@ async def _collect_price_statistics(
         if not rows:
             continue
 
-        # Déterminer le type de capteur
-        meta_entry = metadata.get(entity_id)
-        state_class = None
-        if meta_entry:
-            state_class = meta_entry[1].get("state_class")
-        
-        is_total_increasing = state_class in ("total_increasing", "total") or state_class is None
+        # DÉTERMINER LA MÉTHODE DE CALCUL BASÉE SUR LE STATE_CLASS
+        state_class = entity_state_classes.get(entity_id)
+        is_total_increasing = state_class in ("total_increasing", "total")
 
         total = 0.0
         has_data = False
 
         if is_total_increasing:
-            # Méthode par somme des changes
+            # Méthode pour total_increasing/total : somme des changes
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
@@ -1824,19 +1830,27 @@ async def _collect_price_statistics(
                     last_sum = sum_values[-1][1]
                     total = last_sum - first_sum
                     has_data = True
+                    _LOGGER.debug("📊 Prix %s: méthode sum diff = %f", entity_id, total)
                 elif len(sum_values) == 1:
                     total = sum_values[0][1]
                     has_data = True
+                    _LOGGER.debug("📊 Prix %s: méthode sum single = %f", entity_id, total)
         else:
-            # Pour les autres types, on utilise aussi la somme des changes
+            # Pour measurement ou unknown : somme des changes aussi
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
                     has_data = True
                     total += float(change_value)
+            
+            if has_data:
+                _LOGGER.debug("📊 Prix %s: méthode change (measurement) = %f", entity_id, total)
 
         if has_data:
             results[definition.translation_key] = total
+            _LOGGER.debug("✅ Prix %s: résultat final = %f", entity_id, total)
+        else:
+            _LOGGER.warning("❌ Prix %s: aucune donnée trouvée", entity_id)
 
     return results
 
@@ -1883,7 +1897,7 @@ def _calculate_totals(
     stats: dict[str, list[StatisticsRow]],
     metadata: dict[str, tuple[int, StatisticMetaData]]
 ) -> dict[str, float]:
-    """Additionner les valeurs sur la période pour chaque statistique."""
+    """Additionner les valeurs sur la période pour chaque statistique (énergie)."""
 
     totals: dict[str, float] = {metric.statistic_id: 0.0 for metric in metrics}
 
@@ -1891,61 +1905,43 @@ def _calculate_totals(
         if not rows:
             continue
 
-        stat_type = _determine_statistic_type(metadata.get(statistic_id))
-        
-        if stat_type == "total_increasing":
-            # Priorité: somme des changes
-            change_total = 0.0
-            has_change = False
-            for row in rows:
-                change_value = row.get("change")
-                if change_value is not None:
-                    has_change = True
-                    change_total += float(change_value)
-            
-            if has_change:
-                totals[statistic_id] = change_total
-            else:
-                # Fallback: différence entre premier et dernier sum
-                sum_values = []
-                for row in rows:
-                    sum_value = row.get("sum")
-                    if sum_value is not None:
-                        sum_values.append((row["start"], float(sum_value)))
-                
-                if len(sum_values) >= 2:
-                    sum_values.sort(key=lambda x: x[0])
-                    first_sum = sum_values[0][1]
-                    last_sum = sum_values[-1][1]
-                    totals[statistic_id] = last_sum - first_sum
-                elif len(sum_values) == 1:
-                    totals[statistic_id] = sum_values[0][1]
+        # POUR L'ÉNERGIE : détection automatique (car on sait que ce sont des totaux)
+        # Mais on peut quand même logger pour debug
+        _LOGGER.debug("🔍 Énergie %s: %d rows", statistic_id, len(rows))
 
-        else:  # measurement ou unknown
-            # Utiliser la moyenne des states ou somme des changes
-            change_total = 0.0
-            has_change = False
+        # Méthode prioritaire : somme des changes
+        change_total = 0.0
+        has_change = False
+        for row in rows:
+            change_value = row.get("change")
+            if change_value is not None:
+                has_change = True
+                change_total += float(change_value)
+        
+        if has_change:
+            totals[statistic_id] = change_total
+            _LOGGER.debug("📊 Énergie %s: méthode change = %f", statistic_id, change_total)
+        else:
+            # Fallback: différence entre premier et dernier sum
+            sum_values = []
             for row in rows:
-                change_value = row.get("change")
-                if change_value is not None:
-                    has_change = True
-                    change_total += float(change_value)
+                sum_value = row.get("sum")
+                if sum_value is not None:
+                    sum_values.append((row["start"], float(sum_value)))
             
-            if has_change:
-                totals[statistic_id] = change_total
+            if len(sum_values) >= 2:
+                sum_values.sort(key=lambda x: x[0])
+                first_sum = sum_values[0][1]
+                last_sum = sum_values[-1][1]
+                result = last_sum - first_sum
+                totals[statistic_id] = result
+                _LOGGER.debug("📊 Énergie %s: méthode sum diff = %f", statistic_id, result)
+            elif len(sum_values) == 1:
+                result = sum_values[0][1]
+                totals[statistic_id] = result
+                _LOGGER.debug("📊 Énergie %s: méthode sum single = %f", statistic_id, result)
             else:
-                # Dernier recours: moyenne des states
-                state_values = []
-                for row in rows:
-                    state = row.get("state")
-                    if state is not None:
-                        try:
-                            state_values.append(float(state))
-                        except (TypeError, ValueError):
-                            continue
-                
-                if state_values:
-                    totals[statistic_id] = sum(state_values)
+                _LOGGER.warning("❌ Énergie %s: aucune donnée trouvée", statistic_id)
 
     return totals
 
