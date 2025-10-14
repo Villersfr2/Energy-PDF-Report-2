@@ -610,7 +610,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         display_end,
         bucket,
         timezone,
-    ) = _resolve_service_period(hass, call_data)
+    ) = _resolve_period(hass, call_data)
 
     comparison_period: dict[str, Any] | None = None
     if call.data.get(CONF_COMPARE):
@@ -680,7 +680,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         )
 
     # Collecte principale des séries statistiques dans le fuseau et la granularité
-    # déterminés par _resolve_service_period.
+    # déterminés par _resolve_period.
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket, timezone
     )
@@ -1286,7 +1286,7 @@ def resolve_reporting_period(
     return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
 
 
-def _resolve_service_period(
+def _resolve_period(
     hass: HomeAssistant, call_data: dict[str, Any]
 ) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
     """Calculer les dates de début et fin en tenant compte de la granularité."""
@@ -1543,7 +1543,7 @@ def _parse_row_datetime(value: Any, timezone: tzinfo) -> datetime | None:
     return dt_util.as_utc(candidate)
 
 
-def _row_starts_before(
+def _row_occurs_before_end(
     row: Mapping[str, Any] | StatisticsRow, end: datetime, timezone: tzinfo
 ) -> bool:
     """Vérifier que la ligne appartient bien à la période exclusive."""
@@ -1579,7 +1579,7 @@ def _filter_statistics_map_by_end(
         row_list = _ensure_statistics_list(rows)
 
         filtered_rows = [
-            row for row in row_list if _row_starts_before(row, end, timezone)
+            row for row in row_list if _row_occurs_before_end(row, end, timezone)
         ]
         filtered[statistic_id] = filtered_rows
 
@@ -1635,7 +1635,7 @@ def _sum_daily_totals(
     daily_changes: defaultdict[date, float] = defaultdict(float)
 
     for row in rows:
-        if not _row_starts_before(row, end, timezone):
+        if not _row_occurs_before_end(row, end, timezone):
             continue
 
         start_dt = _parse_row_datetime(_row_value(row, "start"), timezone)
@@ -1720,7 +1720,7 @@ async def _collect_totals_for_sensors(
             continue
 
         rows_list = [
-            row for row in rows_list if _row_starts_before(row, end, timezone)
+            row for row in rows_list if _row_occurs_before_end(row, end, timezone)
         ]
         if not rows_list:
             continue
@@ -2003,7 +2003,7 @@ def _calculate_totals(
         has_change = False
 
         for row in rows:
-            if not _row_starts_before(row, end, timezone):
+            if not _row_occurs_before_end(row, end, timezone):
                 continue
 
             change_value = _row_value(row, "change")
@@ -2138,7 +2138,7 @@ def _build_pdf(
         translations.cover_period.format(period=period_label),
         # Mention explicite de la granularité des statistiques (jour, heure...).
         # Cette information reflète directement la valeur "bucket" calculée par
-        # _resolve_service_period et aide à comprendre comment les données ont été agrégées.
+        # _resolve_period et aide à comprendre comment les données ont été agrégées.
         translations.cover_bucket.format(bucket=bucket_label),
         translations.cover_stats.format(count=len(metrics)),
         translations.cover_generated.format(
