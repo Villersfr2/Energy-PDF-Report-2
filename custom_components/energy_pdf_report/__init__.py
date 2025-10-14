@@ -17,6 +17,10 @@ from urllib.parse import quote, urljoin
 import voluptuous as vol
 
 from homeassistant.components import persistent_notification, recorder
+try:
+    from homeassistant.components.energy import period_resolver
+except ImportError:  # pragma: no cover - compat anciennes versions
+    period_resolver = None  # type: ignore[assignment]
 from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models.statistics import StatisticMetaData
 from homeassistant.components.recorder.statistics import StatisticsRow
@@ -610,7 +614,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         display_end,
         bucket,
         timezone,
-    ) = _resolve_period(hass, call_data)
+    ) = resolve_reporting_period(hass, call_data)
 
     _LOGGER.info(
         "EPR range: %s → %s (UTC) | display %s → %s (local %s) | bucket=%s",
@@ -643,27 +647,26 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                     "Mode comparaison désactivé: la date de fin de comparaison doit être postérieure à la date de début."
                 )
             else:
-                # Les périodes de comparaison sont converties en fuseau local
-                # puis en UTC via resolve_reporting_period pour respecter la logique
-                # du tableau de bord Énergie et exclure la journée suivante.
-                compare_start_utc, compare_end_utc = resolve_reporting_period(
+                (
+                    compare_start,
+                    compare_end,
+                    compare_display_start,
+                    compare_display_end,
+                    compare_bucket,
+                    _,
+                ) = resolve_reporting_period(
                     hass,
-                    None,
-                    compare_start_date,
-                    compare_end_date,
+                    {
+                        CONF_START_DATE: compare_start_date,
+                        CONF_END_DATE: compare_end_date,
+                    },
                 )
-                compare_start_local = compare_start_utc.astimezone(timezone)
-                compare_end_local_exclusive = compare_end_utc.astimezone(timezone)
                 comparison_period = {
-                    "start": compare_start_utc,
-                    "end": compare_end_utc,
-                    "display_start": compare_start_local,
-                    "display_end": compare_end_local_exclusive - timedelta(seconds=1),
-                    "bucket": _select_bucket(
-                        "custom",
-                        compare_start_local,
-                        compare_end_local_exclusive,
-                    ),
+                    "start": compare_start,
+                    "end": compare_end,
+                    "display_start": compare_display_start,
+                    "display_end": compare_display_end,
+                    "bucket": compare_bucket,
                 }
 
     option_co2_enabled = bool(options.get(CONF_CO2, DEFAULT_CO2))
@@ -690,7 +693,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
         )
 
     # Collecte principale des séries statistiques dans le fuseau et la granularité
-    # déterminés par _resolve_period.
+    # déterminés par resolve_reporting_period.
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket, timezone
     )
@@ -1238,21 +1241,27 @@ def _format_dashboard_label(selection: DashboardSelection) -> str | None:
 
 def resolve_reporting_period(
     hass: HomeAssistant,
-    period: str | None,
-    start_date: date | None,
-    end_date: date | None,
-) -> tuple[datetime, datetime]:
-    """Déterminer l'intervalle UTC exclusif correspondant au rapport demandé."""
+    call_data: Mapping[str, Any],
+) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
+    """Déterminer l'intervalle exclusif pour le rapport demandé."""
 
     timezone = _select_timezone(hass)
 
-    normalized_period = (period or "").strip().lower() or None
+    raw_start = call_data.get(CONF_START_DATE)
+    raw_end = call_data.get(CONF_END_DATE)
 
-    if start_date is not None and end_date is not None:
-        if period:
-            _LOGGER.warning(
-                "Les paramètres 'period' (%s) et 'start_date'/'end_date' sont fournis : la période personnalisée sera prioritaire.",
-                period,
+    start_date = _coerce_service_date(raw_start, CONF_START_DATE)
+    end_date = _coerce_service_date(raw_end, CONF_END_DATE)
+
+    raw_period = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
+    normalized_period = (
+        str(raw_period).strip().lower() if raw_period is not None else ""
+    ) or DEFAULT_PERIOD
+
+    if start_date is not None or end_date is not None:
+        if start_date is None or end_date is None:
+            raise HomeAssistantError(
+                "Les dates de début et de fin doivent être renseignées ensemble ou omises."
             )
 
         if end_date < start_date:
@@ -1263,80 +1272,55 @@ def resolve_reporting_period(
         start_local = _localize_date(start_date, timezone)
         end_local_exclusive = _localize_date(end_date + timedelta(days=1), timezone)
 
-        return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
+        display_start_local = start_local
+        display_end_local = end_local_exclusive - timedelta(seconds=1)
 
-    if (start_date is None) ^ (end_date is None):
-        raise HomeAssistantError(
-            "Les dates de début et de fin doivent être renseignées ensemble ou omises."
+        return (
+            dt_util.as_utc(start_local),
+            dt_util.as_utc(end_local_exclusive),
+            display_start_local,
+            display_end_local,
+            "day",
+            timezone,
         )
 
-    normalized_period = normalized_period or DEFAULT_PERIOD
+    if period_resolver is None:
+        raise HomeAssistantError(
+            "La version actuelle de Home Assistant ne supporte pas la résolution de période Energy."
+        )
 
-    now_local = dt_util.now(timezone)
+    try:
+        resolved = period_resolver.resolve(hass, normalized_period)
+    except Exception as err:  # pragma: no cover - dépend de HA
+        raise HomeAssistantError("Période non supportée") from err
 
-    if normalized_period == "day":
-        computed_start = now_local.date()
-        computed_end = computed_start
-    elif normalized_period == "week":
-        current_week_start = (now_local - timedelta(days=now_local.weekday())).date()
-        computed_start = current_week_start - timedelta(days=7)
-        computed_end = computed_start + timedelta(days=6)
-    elif normalized_period == "month":
-        current_month_start = now_local.date().replace(day=1)
-        previous_month_end = current_month_start - timedelta(days=1)
-        computed_start = previous_month_end.replace(day=1)
-        computed_end = previous_month_end
-    elif normalized_period == "year":
-        current_year_start = date(now_local.year, 1, 1)
-        computed_start = date(now_local.year - 1, 1, 1)
-        computed_end = current_year_start - timedelta(days=1)
-    else:
-        raise HomeAssistantError("Période non supportée")
+    start_utc = getattr(resolved, "start", None) or getattr(
+        resolved, "start_utc", None
+    )
+    end_utc = getattr(resolved, "end", None) or getattr(resolved, "end_utc", None)
+    bucket = getattr(resolved, "bucket", None) or getattr(
+        resolved, "granularity", None
+    )
 
-    start_local = _localize_date(computed_start, timezone)
-    end_local_exclusive = _localize_date(computed_end + timedelta(days=1), timezone)
+    if start_utc is None or end_utc is None or bucket is None:
+        raise HomeAssistantError(
+            "Impossible de déterminer la période Energy demandée."
+        )
 
-    return dt_util.as_utc(start_local), dt_util.as_utc(end_local_exclusive)
+    if start_utc.tzinfo is None or end_utc.tzinfo is None:
+        raise HomeAssistantError(
+            "Les dates de période doivent être des datetime avec fuseau horaire."
+        )
 
-
-def _resolve_period(
-    hass: HomeAssistant, call_data: dict[str, Any]
-) -> tuple[datetime, datetime, datetime, datetime, str, tzinfo]:
-    """Calculer les dates de début et fin en tenant compte de la granularité."""
-
-    raw_period = call_data.get(CONF_PERIOD, DEFAULT_PERIOD)
-    period = str(raw_period) if raw_period is not None else DEFAULT_PERIOD
-
-    timezone = _select_timezone(hass)
-
-    start_date_raw = call_data.get(CONF_START_DATE)
-    end_date_raw = call_data.get(CONF_END_DATE)
-
-    start_date = _coerce_service_date(start_date_raw, CONF_START_DATE)
-    end_date = _coerce_service_date(end_date_raw, CONF_END_DATE)
-
-    normalized_period = (period or "").strip().lower() or None
-
-    start_utc, end_utc = resolve_reporting_period(hass, period, start_date, end_date)
-
-    if start_date is not None and end_date is not None:
-        start_local = _localize_date(start_date, timezone)
-        end_local_exclusive = _localize_date(end_date + timedelta(days=1), timezone)
-        bucket_period = "custom"
-    else:
-        start_local = start_utc.astimezone(timezone)
-        end_local_exclusive = end_utc.astimezone(timezone)
-        bucket_period = period
-
-    display_start_local = start_local
-    display_end_local = end_local_exclusive - timedelta(seconds=1)
+    display_start_local = start_utc.astimezone(timezone)
+    display_end_local = end_utc.astimezone(timezone) - timedelta(seconds=1)
 
     return (
         start_utc,
         end_utc,
         display_start_local,
         display_end_local,
-        _select_bucket(bucket_period, start_local, end_local_exclusive),
+        bucket,
         timezone,
     )
 
@@ -1374,34 +1358,6 @@ def _select_timezone(hass: HomeAssistant) -> tzinfo:
             return timezone
 
     return dt_util.DEFAULT_TIME_ZONE
-
-
-def _select_bucket(period: str, start_local: datetime, end_local_exclusive: datetime) -> str:
-    """Choisir une granularité compatible avec recorder pour la période demandée."""
-
-    normalized = period.lower() if isinstance(period, str) else ""
-
-    if normalized == "day":
-        return "hour"
-
-    if normalized == "week":
-        return "day"
-
-    if normalized == "month":
-        return "day"
-
-    if normalized == "year":
-        return "month"
-
-    span = end_local_exclusive - start_local
-
-    if span <= timedelta(days=2):
-        return "hour"
-
-    if span <= timedelta(days=35):
-        return "day"
-
-    return "month"
 
 
 def _localize_date(day: date, timezone: tzinfo) -> datetime:
@@ -2174,7 +2130,7 @@ def _build_pdf(
         translations.cover_period.format(period=period_label),
         # Mention explicite de la granularité des statistiques (jour, heure...).
         # Cette information reflète directement la valeur "bucket" calculée par
-        # _resolve_period et aide à comprendre comment les données ont été agrégées.
+        # resolve_reporting_period et aide à comprendre comment les données ont été agrégées.
         translations.cover_bucket.format(bucket=bucket_label),
         translations.cover_stats.format(count=len(metrics)),
         translations.cover_generated.format(
