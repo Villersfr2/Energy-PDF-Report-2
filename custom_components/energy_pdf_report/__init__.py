@@ -1688,15 +1688,16 @@ async def _collect_co2_statistics(
 
     instance = recorder.get_instance(hass)
     
+    # POUR les capteurs "total", on récupère les données par HEURE pour avoir le max quotidien
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
         start,
         end,
         list(entity_map.keys()),
-        "day",
+        "hour",  # ← CHANGEMENT: récupérer par heure pour avoir le max quotidien
         None,
-        {"change", "sum"},
+        {"change", "sum", "state"},
     )
 
     for entity_id, definition in entity_map.items():
@@ -1706,46 +1707,57 @@ async def _collect_co2_statistics(
 
         # DÉTERMINER LA MÉTHODE DE CALCUL BASÉE SUR LE STATE_CLASS
         state_class = entity_state_classes.get(entity_id)
-        is_total_increasing = state_class in ("total_increasing", "total")
-
+        
         total = 0.0
         has_data = False
 
-        if is_total_increasing:
-            # Méthode pour total_increasing/total : somme des changes
+        if state_class == "total_increasing":
+            # Pour total_increasing : somme des changes (variations)
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
                     has_data = True
                     total += float(change_value)
+            if has_data:
+                _LOGGER.debug("📊 CO2 %s: méthode change (total_increasing) = %f", entity_id, total)
             
-            if not has_data:
-                # Fallback: différence entre premier et dernier sum
-                sum_values = []
-                for row in rows:
-                    sum_value = row.get("sum")
-                    if sum_value is not None:
-                        sum_values.append((row["start"], float(sum_value)))
+        elif state_class == "total":
+            # Pour total : MAX de chaque jour (total journalier cumulé)
+            daily_max_values = {}
+            
+            for row in rows:
+                row_start = row.get("start")
+                if row_start:
+                    row_date = dt_util.as_local(row_start).date()
+                    
+                    # Prendre la valeur "state" (valeur instantanée)
+                    state_value = row.get("state")
+                    if state_value is not None:
+                        state_float = float(state_value)
+                        # Garder la valeur max pour chaque jour
+                        if row_date not in daily_max_values or state_float > daily_max_values[row_date]:
+                            daily_max_values[row_date] = state_float
+                    
+                    # Fallback: utiliser "sum" si "state" n'est pas disponible
+                    elif row.get("sum") is not None:
+                        sum_float = float(row["sum"])
+                        if row_date not in daily_max_values or sum_float > daily_max_values[row_date]:
+                            daily_max_values[row_date] = sum_float
+            
+            if daily_max_values:
+                # Additionner les max de chaque jour
+                total = sum(daily_max_values.values())
+                has_data = True
+                _LOGGER.debug("📊 CO2 %s: méthode max daily (total) = %f (nb_jours=%d, valeurs=%s)", 
+                             entity_id, total, len(daily_max_values), daily_max_values)
                 
-                if len(sum_values) >= 2:
-                    sum_values.sort(key=lambda x: x[0])
-                    first_sum = sum_values[0][1]
-                    last_sum = sum_values[-1][1]
-                    total = last_sum - first_sum
-                    has_data = True
-                    _LOGGER.debug("📊 CO2 %s: méthode sum diff = %f", entity_id, total)
-                elif len(sum_values) == 1:
-                    total = sum_values[0][1]
-                    has_data = True
-                    _LOGGER.debug("📊 CO2 %s: méthode sum single = %f", entity_id, total)
         else:
-            # Pour measurement ou unknown : somme des changes aussi (meilleur fallback)
+            # Pour measurement ou unknown : somme des changes
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
                     has_data = True
                     total += float(change_value)
-            
             if has_data:
                 _LOGGER.debug("📊 CO2 %s: méthode change (measurement) = %f", entity_id, total)
 
@@ -1785,15 +1797,16 @@ async def _collect_price_statistics(
 
     instance = recorder.get_instance(hass)
     
+    # POUR les capteurs "total", on récupère les données par HEURE pour avoir le max quotidien
     stats_map = await instance.async_add_executor_job(
         recorder_statistics.statistics_during_period,
         hass,
         start,
         end,
         list(entity_map.keys()),
-        "day",
+        "hour",  # ← CHANGEMENT: récupérer par heure pour avoir le max quotidien
         None,
-        {"change", "sum"},
+        {"change", "sum", "state"},
     )
 
     for entity_id, definition in entity_map.items():
@@ -1803,46 +1816,57 @@ async def _collect_price_statistics(
 
         # DÉTERMINER LA MÉTHODE DE CALCUL BASÉE SUR LE STATE_CLASS
         state_class = entity_state_classes.get(entity_id)
-        is_total_increasing = state_class in ("total_increasing", "total")
-
+        
         total = 0.0
         has_data = False
 
-        if is_total_increasing:
-            # Méthode pour total_increasing/total : somme des changes
+        if state_class == "total_increasing":
+            # Pour total_increasing : somme des changes (variations)
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
                     has_data = True
                     total += float(change_value)
+            if has_data:
+                _LOGGER.debug("📊 Prix %s: méthode change (total_increasing) = %f", entity_id, total)
             
-            if not has_data:
-                # Fallback: différence entre premier et dernier sum
-                sum_values = []
-                for row in rows:
-                    sum_value = row.get("sum")
-                    if sum_value is not None:
-                        sum_values.append((row["start"], float(sum_value)))
+        elif state_class == "total":
+            # Pour total : MAX de chaque jour (total journalier cumulé)
+            daily_max_values = {}
+            
+            for row in rows:
+                row_start = row.get("start")
+                if row_start:
+                    row_date = dt_util.as_local(row_start).date()
+                    
+                    # Prendre la valeur "state" (valeur instantanée)
+                    state_value = row.get("state")
+                    if state_value is not None:
+                        state_float = float(state_value)
+                        # Garder la valeur max pour chaque jour
+                        if row_date not in daily_max_values or state_float > daily_max_values[row_date]:
+                            daily_max_values[row_date] = state_float
+                    
+                    # Fallback: utiliser "sum" si "state" n'est pas disponible
+                    elif row.get("sum") is not None:
+                        sum_float = float(row["sum"])
+                        if row_date not in daily_max_values or sum_float > daily_max_values[row_date]:
+                            daily_max_values[row_date] = sum_float
+            
+            if daily_max_values:
+                # Additionner les max de chaque jour
+                total = sum(daily_max_values.values())
+                has_data = True
+                _LOGGER.debug("📊 Prix %s: méthode max daily (total) = %f (nb_jours=%d, valeurs=%s)", 
+                             entity_id, total, len(daily_max_values), daily_max_values)
                 
-                if len(sum_values) >= 2:
-                    sum_values.sort(key=lambda x: x[0])
-                    first_sum = sum_values[0][1]
-                    last_sum = sum_values[-1][1]
-                    total = last_sum - first_sum
-                    has_data = True
-                    _LOGGER.debug("📊 Prix %s: méthode sum diff = %f", entity_id, total)
-                elif len(sum_values) == 1:
-                    total = sum_values[0][1]
-                    has_data = True
-                    _LOGGER.debug("📊 Prix %s: méthode sum single = %f", entity_id, total)
         else:
-            # Pour measurement ou unknown : somme des changes aussi
+            # Pour measurement ou unknown : somme des changes
             for row in rows:
                 change_value = row.get("change")
                 if change_value is not None:
                     has_data = True
                     total += float(change_value)
-            
             if has_data:
                 _LOGGER.debug("📊 Prix %s: méthode change (measurement) = %f", entity_id, total)
 
