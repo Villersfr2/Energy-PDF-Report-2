@@ -1223,7 +1223,7 @@ def _resolve_period(
     # ``end_date`` reste inclusif comme dans le tableau de bord Énergie ;
     # recorder se charge ensuite de convertir ce point de sortie en borne exclusive.
     end_local = _localize_date(end_date, timezone)
-    end_local_exclusive = end_local + timedelta(days=1)
+    end_local_exclusive = end_local
 
     start_utc = dt_util.as_utc(start_local)
     end_utc = dt_util.as_utc(end_local_exclusive)  # ⚠️ utiliser la borne exclusive
