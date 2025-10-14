@@ -652,7 +652,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
     stats_result = await _collect_statistics(
         hass, manager, metrics, start, end, bucket
     )
-    totals = _calculate_totals(metrics, stats_result.stats)
+    totals = _calculate_totals(metrics, stats_result.stats, stats_result.metadata)  # MODIFIÉ: ajout de metadata
     primary_context = PeriodStatisticsContext(
         stats=stats_result.stats,
         metadata=stats_result.metadata,
@@ -680,7 +680,7 @@ async def _async_handle_generate(hass: HomeAssistant, call: ServiceCall) -> None
                 err,
             )
         else:
-            comparison_totals = _calculate_totals(metrics, comparison_stats.stats)
+            comparison_totals = _calculate_totals(metrics, comparison_stats.stats, comparison_stats.metadata)  # MODIFIÉ: ajout de metadata
             comparison_context = PeriodStatisticsContext(
                 stats=comparison_stats.stats,
                 metadata=comparison_stats.metadata,
@@ -1194,14 +1194,11 @@ def _resolve_period(
 
     if start_date is None:
         if period == "day":
-            start_date = (now_local - timedelta(days=1)).date()
+            start_date = now_local.date()
         elif period == "week":
-            start_date = (
-                now_local - timedelta(days=now_local.weekday() + 7)
-            ).date()
+            start_date = (now_local - timedelta(days=now_local.weekday())).date()
         elif period == "month":
-            first_of_current_month = now_local.replace(day=1)
-            start_date = (first_of_current_month - timedelta(days=1)).replace(day=1).date()
+            start_date = now_local.replace(day=1).date()
         else:
             raise HomeAssistantError("Période non supportée")
 
@@ -1758,6 +1755,7 @@ def _metadata_error_indicates_requires_hass(message: str) -> bool:
 def _calculate_totals(
     metrics: Iterable[MetricDefinition],
     stats: dict[str, list[StatisticsRow]],
+    metadata: dict[str, tuple[int, StatisticMetaData]]  # MODIFIÉ: ajout du paramètre metadata
 ) -> dict[str, float]:
     """Additionner les valeurs sur la période pour chaque statistique."""
 
@@ -1767,21 +1765,44 @@ def _calculate_totals(
         if not rows:
             continue
 
+        # Déterminer le type de statistique depuis les métadonnées
+        meta_entry = metadata.get(statistic_id)
+        state_class = None
+        if meta_entry:
+            state_class = meta_entry[1].get("state_class")
+        
+        is_total_increasing = state_class == "total_increasing"
 
-        change_total = 0.0
-        has_change = False
+        if is_total_increasing:
+            # Cas total_increasing : somme des changes
+            change_total = 0.0
+            has_change = False
+            for row in rows:
+                change_value = row.get("change")
+                if change_value is not None:
+                    has_change = True
+                    change_total += float(change_value)
+            
+            if has_change:
+                totals[statistic_id] = change_total
 
-        for row in rows:
-
-            change_value = row.get("change")
-            if change_value is None:
-                continue
-            has_change = True
-            change_total += float(change_value)
-
-        if has_change:
-            totals[statistic_id] = change_total
-
+        else:
+            # Cas total (ou measurement) : différence entre premier et dernier sum
+            sum_values = []
+            for row in rows:
+                sum_value = row.get("sum")
+                if sum_value is not None:
+                    sum_values.append((row["start"], float(sum_value)))
+            
+            if len(sum_values) >= 2:
+                # Trier par date et calculer la différence
+                sum_values.sort(key=lambda x: x[0])
+                first_sum = sum_values[0][1]
+                last_sum = sum_values[-1][1]
+                totals[statistic_id] = last_sum - first_sum
+            elif len(sum_values) == 1:
+                # Une seule valeur, consommation = 0 ou la valeur actuelle
+                totals[statistic_id] = 0.0
 
     return totals
 
@@ -2711,4 +2732,3 @@ def _format_percentage_delta(current: float, baseline: float) -> str:
 
 
 __all__ = ["async_setup", "async_setup_entry", "async_unload_entry"]
-
