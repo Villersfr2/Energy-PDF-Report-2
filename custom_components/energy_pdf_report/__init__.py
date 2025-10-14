@@ -1270,14 +1270,14 @@ def resolve_reporting_period(
             return naive.replace(tzinfo=timezone)
 
         start_local = _localize(start_date)
-        end_local = _localize(end_date + timedelta(days=1))
+        end_local = _localize(end_date)
 
         display_start_local = start_local
-        display_end_local = end_local - timedelta(seconds=1)
+        display_end_local = end_local.replace(hour=23, minute=59, second=59)
 
         return (
             dt_util.as_utc(start_local),
-            dt_util.as_utc(end_local),
+            dt_util.as_utc(end_local) + timedelta(days=1),
             display_start_local,
             display_end_local,
             "day",
